@@ -6,7 +6,7 @@ from .config import ExperimentConfig
 from .trainer import HRVDNTrainer
 
 
-def run_ablation(kind: str):
+def run_ablation(kind: str, device: str):
     cfg = ExperimentConfig()
     if kind == "height":
         for n, pd, pf, sr in [
@@ -18,25 +18,25 @@ def run_ablation(kind: str):
             cfg.env.pd_levels = pd
             cfg.env.pf_levels = pf
             cfg.env.sense_radii = sr
-            trainer = HRVDNTrainer(cfg)
+            trainer = HRVDNTrainer(cfg, device=device)
             hist = trainer.train()
             print("height", n, hist[-1] if hist else None)
     elif kind == "compensation":
         for flag in [True, False]:
             cfg.reward.use_compensation = flag
-            trainer = HRVDNTrainer(cfg)
+            trainer = HRVDNTrainer(cfg, device=device)
             hist = trainer.train()
             print("compensation", flag, hist[-1] if hist else None)
     elif kind == "energy":
         for flag in [True, False]:
             cfg.reward.use_energy_penalty = flag
-            trainer = HRVDNTrainer(cfg)
+            trainer = HRVDNTrainer(cfg, device=device)
             hist = trainer.train()
             print("energy", flag, hist[-1] if hist else None)
     elif kind == "reward":
         for mode in ["dense", "sparse", "hybrid"]:
             cfg.reward.mode = mode
-            trainer = HRVDNTrainer(cfg)
+            trainer = HRVDNTrainer(cfg, device=device)
             hist = trainer.train()
             print("reward", mode, hist[-1] if hist else None)
 
@@ -46,10 +46,11 @@ def main():
     p.add_argument("--ablation", choices=["height", "compensation", "energy", "reward"], default=None)
     p.add_argument("--dense-epochs", type=int, default=None)
     p.add_argument("--sparse-epochs", type=int, default=None)
+    p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     args = p.parse_args()
 
     if args.ablation:
-        run_ablation(args.ablation)
+        run_ablation(args.ablation, args.device)
         return
 
     cfg = ExperimentConfig()
@@ -58,7 +59,7 @@ def main():
     if args.sparse_epochs is not None:
         cfg.train.sparse_epochs = args.sparse_epochs
 
-    trainer = HRVDNTrainer(cfg)
+    trainer = HRVDNTrainer(cfg, device=args.device)
     trainer.train()
 
 

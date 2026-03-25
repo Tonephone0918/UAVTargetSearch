@@ -55,6 +55,8 @@ class UAVSearchEnv:
         self.collisions = 0
         self.total_reward = 0.0
         self.last_entropy = self._global_entropy()
+        self.step_new_coverage = 0
+        self.step_turns = [False] * self.cfg.n_uavs
         return self._build_obs()
 
     def _global_entropy(self):
@@ -150,6 +152,8 @@ class UAVSearchEnv:
     def step(self, actions: List[int]):
         s = self.cfg.map_size
         self.t += 1
+        prev_dirs = list(self.prev_dirs)
+        self.step_turns = [False] * self.cfg.n_uavs
 
         for i, a in enumerate(actions):
             mask = self.valid_actions(i)
@@ -157,6 +161,7 @@ class UAVSearchEnv:
                 a = int(np.flatnonzero(mask)[0])
             h, v = a // 3, a % 3
             dx, dy = H_DIRS[h]
+            self.step_turns[i] = (prev_dirs[i] != (dx, dy))
             self.prev_dirs[i] = (dx, dy)
             self.uavs[i][0] = int(np.clip(self.uavs[i][0] + dx, 0, s - 1))
             self.uavs[i][1] = int(np.clip(self.uavs[i][1] + dy, 0, s - 1))
@@ -166,6 +171,7 @@ class UAVSearchEnv:
         self._move_threats()
         target_grid = self._target_grid()
 
+        self.step_new_coverage = 0
         for i, (x, y, z) in enumerate(self.uavs):
             m = self.maps[i]
             r = self.cfg.sense_radii[z]
@@ -178,6 +184,8 @@ class UAVSearchEnv:
                 p = pd if has_target else pf
                 detections.append(1 if self.rng.random() < p else 0)
                 m.stm[cx, cy] = self.t
+                if self.coverage[cx, cy] == 0:
+                    self.step_new_coverage += 1
                 self.coverage[cx, cy] = 1
             m.stage1_detection_update(cells, detections, pd=pd, pf=pf)
             neighbor_maps = [self.maps[j] for j in self._neighbors(i)]
@@ -215,9 +223,11 @@ class UAVSearchEnv:
         reward = 0.0
         dense = self.rew_cfg.mode != "sparse"
         sparse = self.rew_cfg.mode == "sparse"
+        discovery_reward = 0.0
 
         if new_found:
-            reward += new_found * max(0.0, self.rew_cfg.r1_discovery - self.t)
+            discovery_reward = new_found * max(0.0, self.rew_cfg.r1_discovery - self.t)
+            reward += discovery_reward
 
         # collisions
         col = 0
@@ -231,8 +241,11 @@ class UAVSearchEnv:
                 if (xi - tx) ** 2 + (yi - ty) ** 2 <= self.cfg.threat_safe_dist ** 2:
                     col += 1
         self.collisions += col
+        collision_reward = 0.0
         if col > 0:
-            reward += self.rew_cfg.r3_collision * col
+            collision_reward = self.rew_cfg.r3_collision * col
+            reward += collision_reward
+        sparse_reward = discovery_reward + collision_reward
 
         if dense:
             reward += self.rew_cfg.r2_time
@@ -241,23 +254,22 @@ class UAVSearchEnv:
             self.last_entropy = ent
 
             dpm_gain = 0.0
-            new_cov = 0
             energy_turn_penalty = 0
             for i, (x, y, _) in enumerate(self.uavs):
                 dpm_gain += self.maps[i].dpm[x, y]
-                if self.coverage[x, y] == 1:
-                    new_cov += 1
-                if self.rew_cfg.use_energy_penalty and self.prev_dirs[i] != (1, 0):
+                if self.rew_cfg.use_energy_penalty and self.step_turns[i] and self.maps[i].tpm[x, y] <= self.cfg.xi_p:
                     energy_turn_penalty += 1
             reward += self.rew_cfg.r5_pheromone * dpm_gain
-            reward += self.rew_cfg.r6_coverage * new_cov
-            reward -= self.rew_cfg.r7_energy_penalty * energy_turn_penalty
+            reward += self.rew_cfg.r6_coverage * (self.step_new_coverage / float(self.cfg.map_size * self.cfg.map_size))
+            reward -= self.rew_cfg.r7_energy_penalty * (energy_turn_penalty / float(max(1, self.cfg.n_uavs)))
 
         info = {
             "search_rate": len(self.found_targets) / self.cfg.n_targets,
             "coverage_rate": float(self.coverage.mean()),
             "collisions": col,
             "error_rate": float(np.abs(np.mean([m.tpm for m in self.maps], axis=0) - target_grid).mean()),
+            "new_found": new_found,
+            "sparse_reward": float(sparse_reward),
             "dense_mode": dense and not sparse,
         }
         return reward, info
@@ -302,4 +314,3 @@ class UAVSearchEnv:
 
     def clone_for_reward(self, mode: str):
         self.rew_cfg.mode = mode
-

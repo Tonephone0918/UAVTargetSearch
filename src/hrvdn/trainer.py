@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import random
+from dataclasses import asdict
+from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -24,9 +26,10 @@ def _obs_to_tensors(obs: List[Dict], device: str):
 
 
 class HRVDNTrainer:
-    def __init__(self, cfg: ExperimentConfig, device: str = "cpu"):
+    def __init__(self, cfg: ExperimentConfig, device: str = "auto"):
         self.cfg = cfg
-        self.device = device
+        self.device = self._resolve_device(device)
+        print(f"[HRVDNTrainer] device={self.device}")
         torch.manual_seed(cfg.train.seed)
         np.random.seed(cfg.train.seed)
         random.seed(cfg.train.seed)
@@ -35,11 +38,31 @@ class HRVDNTrainer:
         sample_obs = self.env.reset()[0]
         map_dim = int(np.prod(sample_obs["map"].shape))
         extra_dim = int(sample_obs["extra"].shape[0])
-        self.policy = AgentQNet(map_dim, extra_dim, cfg.train.hidden_dim).to(device)
-        self.target = copy.deepcopy(self.policy).to(device)
-        self.mixer = VDNMixer().to(device)
+        self.policy = AgentQNet(map_dim, extra_dim, cfg.train.hidden_dim).to(self.device)
+        self.target = copy.deepcopy(self.policy).to(self.device)
+        self.mixer = VDNMixer().to(self.device)
         self.buffer = SequenceReplayBuffer(cfg.train.buffer_size)
         self.optim = optim.Adam(self.policy.parameters(), lr=cfg.train.lr_dense)
+        self.ckpt_dir = Path(cfg.train.checkpoint_dir)
+        self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+        self.best_search_rate = float("-inf")
+        self.writer = None
+        if cfg.train.use_tensorboard:
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+
+                self.writer = SummaryWriter(log_dir=cfg.train.tensorboard_dir)
+                print(f"[HRVDNTrainer] tensorboard={cfg.train.tensorboard_dir}")
+            except Exception as e:
+                print(f"[HRVDNTrainer] tensorboard disabled ({e})")
+
+    @staticmethod
+    def _resolve_device(device: str) -> str:
+        if device == "auto":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cuda":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        return "cpu"
 
     def _pick_actions(self, obs, hs, eps):
         actions = []
@@ -55,6 +78,21 @@ class HRVDNTrainer:
             q = q.masked_fill(~mask, -1e9)
             actions.append(int(q.argmax(dim=-1).item()))
         return actions, hs
+
+    def _save_checkpoint(self, name: str, epoch: int, metrics: Dict[str, float] | None = None):
+        path = self.ckpt_dir / name
+        payload = {
+            "epoch": epoch,
+            "device": self.device,
+            "config": asdict(self.cfg),
+            "policy_state_dict": self.policy.state_dict(),
+            "target_state_dict": self.target.state_dict(),
+            "optimizer_state_dict": self.optim.state_dict(),
+            "metrics": metrics or {},
+            "best_search_rate": self.best_search_rate,
+        }
+        torch.save(payload, path)
+        return path
 
     def _train_step(self):
         if len(self.buffer) < self.cfg.train.batch_size:
@@ -118,14 +156,12 @@ class HRVDNTrainer:
             obs = self.env.reset()
             hs = [torch.zeros(1, 1, self.cfg.train.hidden_dim, device=self.device) for _ in range(self.cfg.env.n_uavs)]
             done = False
+            ep_reward = 0.0
+            ep_losses = []
             while not done:
                 actions, hs = self._pick_actions(obs, hs, eps)
                 next_obs, reward, done, info = self.env.step(actions)
-
-                sparse_proxy = 0.0
-                if info["collisions"] > 0:
-                    sparse_proxy += self.cfg.reward.r3_collision * info["collisions"]
-                sparse_proxy += max(0.0, self.cfg.reward.r1_discovery * info["search_rate"])
+                ep_reward += reward
 
                 self.buffer.push(
                     {
@@ -134,11 +170,13 @@ class HRVDNTrainer:
                         "reward": reward,
                         "next_obs": next_obs,
                         "done": done,
-                        "reward_ctx": {"sparse_reward": sparse_proxy},
+                        "reward_ctx": {"sparse_reward": info["sparse_reward"]},
                     }
                 )
                 obs = next_obs
-                self._train_step()
+                loss = self._train_step()
+                if loss is not None:
+                    ep_losses.append(loss)
 
             if ep < self.cfg.train.dense_epochs:
                 eps = max(self.cfg.train.epsilon_min, eps - eps_decay)
@@ -148,9 +186,35 @@ class HRVDNTrainer:
             if ep % self.cfg.train.target_update_interval == 0:
                 self.target.load_state_dict(self.policy.state_dict())
 
+            if self.writer is not None:
+                self.writer.add_scalar("train/episode_reward", ep_reward, ep)
+                self.writer.add_scalar("train/epsilon", eps, ep)
+                self.writer.add_scalar("train/search_rate", info["search_rate"], ep)
+                self.writer.add_scalar("train/coverage_rate", info["coverage_rate"], ep)
+                self.writer.add_scalar("train/collisions", info["collisions"], ep)
+                if ep_losses:
+                    self.writer.add_scalar("train/loss", float(np.mean(ep_losses)), ep)
+
             if ep % 50 == 0:
                 m = evaluate(self.env, self.policy, episodes=2, device=self.device)
                 history.append((ep, m))
                 print(f"epoch={ep} metrics={m}")
+                if self.writer is not None:
+                    self.writer.add_scalar("eval/search_rate", m["search_rate"], ep)
+                    self.writer.add_scalar("eval/coverage_rate", m["coverage_rate"], ep)
+                    self.writer.add_scalar("eval/collisions", m["collisions"], ep)
+                    self.writer.add_scalar("eval/avg_reward", m["avg_reward"], ep)
+                    self.writer.add_scalar("eval/error_rate", m["error_rate"], ep)
+                if self.cfg.train.save_best and m["search_rate"] > self.best_search_rate:
+                    self.best_search_rate = m["search_rate"]
+                    self._save_checkpoint("best.pt", ep, m)
 
+            if self.cfg.train.save_every > 0 and ep % self.cfg.train.save_every == 0:
+                self._save_checkpoint(f"epoch_{ep}.pt", ep)
+                self._save_checkpoint("latest.pt", ep)
+
+        self._save_checkpoint("final.pt", total_epochs - 1 if total_epochs > 0 else 0)
+        self._save_checkpoint("latest.pt", total_epochs - 1 if total_epochs > 0 else 0)
+        if self.writer is not None:
+            self.writer.close()
         return history

@@ -29,7 +29,7 @@ class EnvConfig:
     ea: float = 0.45
     ga: float = 0.3
     da: float = 2.0
-    p_delta: float = 0.15
+    p_delta: float = 0.5
 
     patch_size: int = 11
     max_steps: int = 80
@@ -66,6 +66,11 @@ class TrainConfig:
     epsilon_start: float = 1.0
     epsilon_min: float = 0.05
     target_update_interval: int = 50
+    checkpoint_dir: str = "checkpoints"
+    save_every: int = 50
+    save_best: bool = True
+    tensorboard_dir: str = "runs/hrvdn"
+    use_tensorboard: bool = True
 
     seed: int = 42
 
