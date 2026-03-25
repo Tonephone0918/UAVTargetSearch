@@ -79,11 +79,13 @@ class HRVDNTrainer:
             actions.append(int(q.argmax(dim=-1).item()))
         return actions, hs
 
-    def _save_checkpoint(self, name: str, epoch: int, metrics: Dict[str, float] | None = None):
+    def _save_checkpoint(self, name: str, epoch: int, epsilon: float, metrics: Dict[str, float] | None = None):
         path = self.ckpt_dir / name
         payload = {
             "epoch": epoch,
             "device": self.device,
+            "epsilon": epsilon,
+            "reward_mode": self.cfg.reward.mode,
             "config": asdict(self.cfg),
             "policy_state_dict": self.policy.state_dict(),
             "target_state_dict": self.target.state_dict(),
@@ -93,6 +95,19 @@ class HRVDNTrainer:
         }
         torch.save(payload, path)
         return path
+
+    def _load_checkpoint(self, path: str, default_eps: float):
+        ckpt = torch.load(path, map_location=self.device)
+        self.policy.load_state_dict(ckpt["policy_state_dict"])
+        self.target.load_state_dict(ckpt["target_state_dict"])
+        self.optim.load_state_dict(ckpt["optimizer_state_dict"])
+        self.best_search_rate = float(ckpt.get("best_search_rate", self.best_search_rate))
+        self.env.clone_for_reward(ckpt.get("reward_mode", self.cfg.reward.mode))
+
+        last_epoch = int(ckpt.get("epoch", -1))
+        resume_epoch = max(0, last_epoch + 1)
+        resume_eps = float(ckpt.get("epsilon", default_eps))
+        return resume_epoch, resume_eps
 
     def _train_step(self):
         if len(self.buffer) < self.cfg.train.batch_size:
@@ -140,13 +155,21 @@ class HRVDNTrainer:
         self.optim.step()
         return float(loss.item())
 
-    def train(self):
+    def train(self, resume_path: str | None = None):
         total_epochs = self.cfg.train.dense_epochs + self.cfg.train.sparse_epochs
         eps = self.cfg.train.epsilon_start
         eps_decay = (self.cfg.train.epsilon_start - self.cfg.train.epsilon_min) / max(1, self.cfg.train.dense_epochs)
+        start_epoch = 0
+
+        if resume_path:
+            ckpt_path = Path(resume_path)
+            if not ckpt_path.exists():
+                raise FileNotFoundError(f"Checkpoint not found: {resume_path}")
+            start_epoch, eps = self._load_checkpoint(str(ckpt_path), eps)
+            print(f"[HRVDNTrainer] resume from {ckpt_path} at epoch={start_epoch} eps={eps:.4f}")
 
         history = []
-        for ep in range(total_epochs):
+        for ep in range(start_epoch, total_epochs):
             if ep == self.cfg.train.dense_epochs and self.cfg.reward.mode == "hybrid":
                 self.env.clone_for_reward("sparse")
                 self.target.load_state_dict(self.policy.state_dict())
@@ -195,6 +218,14 @@ class HRVDNTrainer:
                 if ep_losses:
                     self.writer.add_scalar("train/loss", float(np.mean(ep_losses)), ep)
 
+            mean_loss = float(np.mean(ep_losses)) if ep_losses else float("nan")
+            phase = "dense" if ep < self.cfg.train.dense_epochs else "sparse"
+            print(
+                f"epoch={ep} phase={phase} eps={eps:.4f} reward={ep_reward:.3f} "
+                f"loss={mean_loss:.6f} search={info['search_rate']:.3f} "
+                f"coverage={info['coverage_rate']:.3f} collisions={info['collisions']}"
+            )
+
             if ep % 50 == 0:
                 m = evaluate(self.env, self.policy, episodes=2, device=self.device)
                 history.append((ep, m))
@@ -207,14 +238,15 @@ class HRVDNTrainer:
                     self.writer.add_scalar("eval/error_rate", m["error_rate"], ep)
                 if self.cfg.train.save_best and m["search_rate"] > self.best_search_rate:
                     self.best_search_rate = m["search_rate"]
-                    self._save_checkpoint("best.pt", ep, m)
+                    self._save_checkpoint("best.pt", ep, eps, m)
 
             if self.cfg.train.save_every > 0 and ep % self.cfg.train.save_every == 0:
-                self._save_checkpoint(f"epoch_{ep}.pt", ep)
-                self._save_checkpoint("latest.pt", ep)
+                self._save_checkpoint(f"epoch_{ep}.pt", ep, eps)
+                self._save_checkpoint("latest.pt", ep, eps)
 
-        self._save_checkpoint("final.pt", total_epochs - 1 if total_epochs > 0 else 0)
-        self._save_checkpoint("latest.pt", total_epochs - 1 if total_epochs > 0 else 0)
+        last_epoch = (total_epochs - 1) if total_epochs > 0 else 0
+        self._save_checkpoint("final.pt", last_epoch, eps)
+        self._save_checkpoint("latest.pt", last_epoch, eps)
         if self.writer is not None:
             self.writer.close()
         return history

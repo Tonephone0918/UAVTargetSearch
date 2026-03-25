@@ -47,6 +47,7 @@ def main():
     p.add_argument("--dense-epochs", type=int, default=None)
     p.add_argument("--sparse-epochs", type=int, default=None)
     p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    p.add_argument("--resume", type=str, default=None, help="Path to checkpoint, e.g. checkpoints/latest.pt")
     args = p.parse_args()
 
     if args.ablation:
@@ -60,7 +61,7 @@ def main():
         cfg.train.sparse_epochs = args.sparse_epochs
 
     trainer = HRVDNTrainer(cfg, device=args.device)
-    trainer.train()
+    trainer.train(resume_path=args.resume)
 
 
 if __name__ == "__main__":
