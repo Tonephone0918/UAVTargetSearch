@@ -14,7 +14,7 @@ A runnable reproduction-oriented codebase for multi-UAV cooperative target searc
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install torch numpy
+pip install -r requirements.txt
 PYTHONPATH=src python -m hrvdn.main --dense-epochs 2 --sparse-epochs 2
 ```
 
