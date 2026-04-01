@@ -53,14 +53,26 @@ def main():
     p.add_argument("--ablation", choices=["height", "compensation", "energy", "reward"], default=None)
     p.add_argument("--dense-epochs", type=int, default=None)
     p.add_argument("--sparse-epochs", type=int, default=None)
+    p.add_argument(
+        "--normalize-dpm-reward",
+        action="store_true",
+        help="Normalize the DPM reward by n_uavs * map_size * map_size.",
+    )
     p.add_argument("--map-size", type=int, default=None)
     p.add_argument("--n-uavs", type=int, default=None)
     p.add_argument("--n-targets", type=int, default=None)
     p.add_argument("--n-threats", type=int, default=None)
     p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument(
+        "--terminate-on-all-found",
+        action="store_true",
+        help="End an episode immediately when all targets have been found.",
+    )
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     p.add_argument("--resume", type=str, default=None, help="Path to checkpoint, e.g. checkpoints/latest.pt")
+    p.add_argument("--checkpoint-dir", type=str, default=None, help="Directory for saved checkpoints.")
+    p.add_argument("--tensorboard-dir", type=str, default=None, help="Directory for TensorBoard logs.")
     p.add_argument("--skip-train", action="store_true", help="Skip training and only run validation/report.")
     p.add_argument("--validate-checkpoint", type=str, default=None, help="Evaluate a checkpoint path.")
     p.add_argument("--eval-episodes", type=int, default=10, help="Episodes for checkpoint validation.")
@@ -105,10 +117,16 @@ def main():
             cfg.train.checkpoint_dir = "checkpoints/mappo"
         if cfg.train.tensorboard_dir == "runs/hrvdn":
             cfg.train.tensorboard_dir = "runs/mappo"
+    if args.checkpoint_dir is not None:
+        cfg.train.checkpoint_dir = args.checkpoint_dir
+    if args.tensorboard_dir is not None:
+        cfg.train.tensorboard_dir = args.tensorboard_dir
     if args.dense_epochs is not None:
         cfg.train.dense_epochs = args.dense_epochs
     if args.sparse_epochs is not None:
         cfg.train.sparse_epochs = args.sparse_epochs
+    if args.normalize_dpm_reward:
+        cfg.reward.normalize_dpm_reward = True
     apply_env_overrides(
         cfg,
         map_size=args.map_size,
@@ -116,6 +134,7 @@ def main():
         n_targets=args.n_targets,
         n_threats=args.n_threats,
         max_steps=args.max_steps,
+        terminate_on_all_targets_found=True if args.terminate_on_all_found else None,
         seed=args.seed,
     )
     env_override_kwargs = {
@@ -124,6 +143,7 @@ def main():
         "n_targets": args.n_targets,
         "n_threats": args.n_threats,
         "max_steps": args.max_steps,
+        "terminate_on_all_targets_found": True if args.terminate_on_all_found else None,
         "seed": args.seed,
     }
 

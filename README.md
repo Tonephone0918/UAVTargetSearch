@@ -45,6 +45,9 @@ PYTHONPATH=src python -m hrvdn.main \
   --n-uavs 10 \
   --n-targets 10 \
   --n-threats 5 \
+  --checkpoint-dir checkpoints/mappo_run1 \
+  --tensorboard-dir runs/mappo_run1 \
+  --normalize-dpm-reward \
   --dense-epochs 600 \
   --sparse-epochs 2800
 ```
@@ -53,6 +56,11 @@ MAPPO checkpoints and TensorBoard logs default to:
 
 - `checkpoints/mappo`
 - `runs/mappo`
+
+You can override both paths from the command line with
+`--checkpoint-dir` and `--tensorboard-dir`.
+If dense training becomes dominated by the pheromone term, you can enable
+`--normalize-dpm-reward` to scale the DPM reward by swarm size and map area.
 
 Start TensorBoard:
 
@@ -64,6 +72,10 @@ The current MAPPO baseline uses a shared actor plus centralized critic.
 Evaluation and replay can override `--n-uavs` without rebuilding the network,
 so it is suitable as a controllable generalization baseline for later
 algorithm modifications.
+
+Episodes now default to a fixed horizon and end at `--max-steps`, which is
+closer to the paper's mission-period formulation. If you want the old
+behavior, you can pass `--terminate-on-all-found`.
 
 ## Validation + Visualization
 

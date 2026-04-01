@@ -34,6 +34,7 @@ class EnvConfig:
     patch_size: int = 11
     max_steps: int = 120
     strict_found_detection: bool = True
+    terminate_on_all_targets_found: bool = False
 
 
 @dataclass
@@ -49,6 +50,7 @@ class RewardConfig:
 
     use_compensation: bool = True
     use_energy_penalty: bool = True
+    normalize_dpm_reward: bool = False
 
 
 @dataclass

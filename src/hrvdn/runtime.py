@@ -35,6 +35,7 @@ def apply_env_overrides(
     n_targets: int | None = None,
     n_threats: int | None = None,
     max_steps: int | None = None,
+    terminate_on_all_targets_found: bool | None = None,
     seed: int | None = None,
 ) -> ExperimentConfig:
     if map_size is not None:
@@ -47,6 +48,8 @@ def apply_env_overrides(
         cfg.env.n_threats = n_threats
     if max_steps is not None:
         cfg.env.max_steps = max_steps
+    if terminate_on_all_targets_found is not None:
+        cfg.env.terminate_on_all_targets_found = terminate_on_all_targets_found
     if seed is not None:
         cfg.train.seed = seed
     return cfg
