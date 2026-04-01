@@ -59,8 +59,16 @@ class CognitiveMaps:
         stale = (timestep - self.stm) > t0
         if not stale.any():
             return
-        delta = np.where(self.tpm[stale] > 0.5, -p_delta, p_delta)
-        self.tpm[stale] = np.clip(self.tpm[stale] + delta, 0.0, 1.0)
+
+        # Paper-aligned revisit compensation:
+        # stale cells only increase toward 0.5 and never exceed it.
+        stale_vals = self.tpm[stale]
+        raised = np.where(
+            stale_vals < (0.5 - p_delta),
+            stale_vals + p_delta,
+            0.5,
+        )
+        self.tpm[stale] = np.clip(raised, 0.0, 0.5)
         self.n_plus[stale] = 0
         self.n_minus[stale] = 0
 

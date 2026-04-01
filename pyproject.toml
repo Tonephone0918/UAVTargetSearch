@@ -3,7 +3,7 @@ name = "hrvdn-uav-search"
 version = "0.1.0"
 description = "HRVDN reproduction for multi-UAV target search"
 requires-python = ">=3.10"
-dependencies = ["numpy", "torch"]
+dependencies = ["numpy", "torch", "tensorboard"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

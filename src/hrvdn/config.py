@@ -23,7 +23,7 @@ class EnvConfig:
     dynamic_threat: bool = True
     threat_move_period: int = 3
 
-    t0: int = 5
+    t0: int = 20
     zeta_p: float = 0.75
     xi_p: float = 0.99
     ea: float = 0.45
@@ -32,7 +32,8 @@ class EnvConfig:
     p_delta: float = 0.5
 
     patch_size: int = 11
-    max_steps: int = 80
+    max_steps: int = 120
+    strict_found_detection: bool = True
 
 
 @dataclass
@@ -76,7 +77,23 @@ class TrainConfig:
 
 
 @dataclass
+class MappoConfig:
+    actor_lr: float = 3e-4
+    critic_lr: float = 1e-3
+    actor_lr_sparse: float = 1e-4
+    critic_lr_sparse: float = 3e-4
+    update_epochs: int = 4
+    gae_lambda: float = 0.95
+    clip_coef: float = 0.2
+    entropy_coef: float = 0.01
+    value_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    target_kl: float = 0.03
+
+
+@dataclass
 class ExperimentConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    mappo: MappoConfig = field(default_factory=MappoConfig)

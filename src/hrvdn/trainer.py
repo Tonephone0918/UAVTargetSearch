@@ -38,7 +38,7 @@ class HRVDNTrainer:
         sample_obs = self.env.reset()[0]
         map_dim = int(np.prod(sample_obs["map"].shape))
         extra_dim = int(sample_obs["extra"].shape[0])
-        self.policy = AgentQNet(map_dim, extra_dim, cfg.train.hidden_dim).to(self.device)
+        self.policy = AgentQNet(map_dim, extra_dim, cfg.train.hidden_dim, n_actions=self.env.n_actions).to(self.device)
         self.target = copy.deepcopy(self.policy).to(self.device)
         self.mixer = VDNMixer().to(self.device)
         self.buffer = SequenceReplayBuffer(cfg.train.buffer_size)
@@ -82,6 +82,7 @@ class HRVDNTrainer:
     def _save_checkpoint(self, name: str, epoch: int, epsilon: float, metrics: Dict[str, float] | None = None):
         path = self.ckpt_dir / name
         payload = {
+            "algo": "hrvdn",
             "epoch": epoch,
             "device": self.device,
             "epsilon": epsilon,
@@ -155,6 +156,13 @@ class HRVDNTrainer:
         self.optim.step()
         return float(loss.item())
 
+    def _make_eval_env(self) -> UAVSearchEnv:
+        return UAVSearchEnv(
+            copy.deepcopy(self.cfg.env),
+            copy.deepcopy(self.cfg.reward),
+            seed=self.cfg.train.seed + 10_000,
+        )
+
     def train(self, resume_path: str | None = None):
         total_epochs = self.cfg.train.dense_epochs + self.cfg.train.sparse_epochs
         eps = self.cfg.train.epsilon_start
@@ -214,7 +222,7 @@ class HRVDNTrainer:
                 self.writer.add_scalar("train/epsilon", eps, ep)
                 self.writer.add_scalar("train/search_rate", info["search_rate"], ep)
                 self.writer.add_scalar("train/coverage_rate", info["coverage_rate"], ep)
-                self.writer.add_scalar("train/collisions", info["collisions"], ep)
+                self.writer.add_scalar("train/collisions", float(self.env.collisions), ep)
                 if ep_losses:
                     self.writer.add_scalar("train/loss", float(np.mean(ep_losses)), ep)
 
@@ -223,11 +231,12 @@ class HRVDNTrainer:
             print(
                 f"epoch={ep} phase={phase} eps={eps:.4f} reward={ep_reward:.3f} "
                 f"loss={mean_loss:.6f} search={info['search_rate']:.3f} "
-                f"coverage={info['coverage_rate']:.3f} collisions={info['collisions']}"
+                f"coverage={info['coverage_rate']:.3f} collisions={float(self.env.collisions):.0f}"
             )
 
             if ep % 50 == 0:
-                m = evaluate(self.env, self.policy, episodes=2, device=self.device)
+                eval_env = self._make_eval_env()
+                m = evaluate(eval_env, self.policy, episodes=2, device=self.device)
                 history.append((ep, m))
                 print(f"epoch={ep} metrics={m}")
                 if self.writer is not None:
