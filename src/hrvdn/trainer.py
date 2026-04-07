@@ -4,6 +4,7 @@ import copy
 import random
 from dataclasses import asdict
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, List
 
 import numpy as np
@@ -16,6 +17,8 @@ from .env import UAVSearchEnv
 from .evaluate import evaluate
 from .model import AgentQNet, VDNMixer
 from .replay import SequenceReplayBuffer
+from .shield import CentralizedSafetyShield
+from .stats import EpisodeStatsAccumulator, SummaryCSVLogger, log_summary_scalars
 
 
 def _obs_to_tensors(obs: List[Dict], device: str):
@@ -46,6 +49,8 @@ class HRVDNTrainer:
         self.ckpt_dir = Path(cfg.train.checkpoint_dir)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
         self.best_search_rate = float("-inf")
+        self.shield = CentralizedSafetyShield(cfg)
+        self.summary_logger = SummaryCSVLogger(cfg.train.tensorboard_dir)
         self.writer = None
         if cfg.train.use_tensorboard:
             try:
@@ -65,19 +70,51 @@ class HRVDNTrainer:
         return "cpu"
 
     def _pick_actions(self, obs, hs, eps):
+        if not self.shield.enabled:
+            actions = []
+            for i, o in enumerate(obs):
+                if random.random() < eps:
+                    valid = np.flatnonzero(o["action_mask"])
+                    actions.append(int(random.choice(valid.tolist())))
+                    continue
+                om = torch.tensor(o["map"], dtype=torch.float32, device=self.device).flatten().unsqueeze(0)
+                ex = torch.tensor(o["extra"], dtype=torch.float32, device=self.device).unsqueeze(0)
+                q, hs[i] = self.policy(om, ex, hs[i])
+                mask = torch.tensor(o["action_mask"], dtype=torch.bool, device=self.device).unsqueeze(0)
+                q = q.masked_fill(~mask, -1e9)
+                actions.append(int(q.argmax(dim=-1).item()))
+            dummy_preferences = np.zeros((self.cfg.env.n_uavs, self.env.n_actions), dtype=np.float32)
+            final_actions, _, shield_stats = self.shield.apply(
+                self.env,
+                actions,
+                dummy_preferences,
+                np.stack([o["action_mask"] for o in obs]),
+                selection_mode="argmax",
+            )
+            return final_actions, hs, shield_stats
+
         actions = []
+        preferences = []
         for i, o in enumerate(obs):
-            if random.random() < eps:
-                valid = np.flatnonzero(o["action_mask"])
-                actions.append(int(random.choice(valid.tolist())))
-                continue
             om = torch.tensor(o["map"], dtype=torch.float32, device=self.device).flatten().unsqueeze(0)
             ex = torch.tensor(o["extra"], dtype=torch.float32, device=self.device).unsqueeze(0)
             q, hs[i] = self.policy(om, ex, hs[i])
             mask = torch.tensor(o["action_mask"], dtype=torch.bool, device=self.device).unsqueeze(0)
             q = q.masked_fill(~mask, -1e9)
-            actions.append(int(q.argmax(dim=-1).item()))
-        return actions, hs
+            preferences.append(q.squeeze(0))
+            if random.random() < eps:
+                valid = np.flatnonzero(o["action_mask"])
+                actions.append(int(random.choice(valid.tolist())))
+            else:
+                actions.append(int(q.argmax(dim=-1).item()))
+        final_actions, _, shield_stats = self.shield.apply(
+            self.env,
+            actions,
+            torch.stack(preferences, dim=0),
+            np.stack([o["action_mask"] for o in obs]),
+            selection_mode="argmax",
+        )
+        return final_actions, hs, shield_stats
 
     def _save_checkpoint(self, name: str, epoch: int, epsilon: float, metrics: Dict[str, float] | None = None):
         path = self.ckpt_dir / name
@@ -185,14 +222,22 @@ class HRVDNTrainer:
                 self.buffer.recalc_rewards(lambda ctx: ctx["sparse_reward"])
 
             obs = self.env.reset()
+            self.shield.reset_episode()
+            episode_stats = EpisodeStatsAccumulator()
             hs = [torch.zeros(1, 1, self.cfg.train.hidden_dim, device=self.device) for _ in range(self.cfg.env.n_uavs)]
             done = False
-            ep_reward = 0.0
             ep_losses = []
+            last_info = None
+            episode_step_time = 0.0
+            episode_stats_time = 0.0
             while not done:
-                actions, hs = self._pick_actions(obs, hs, eps)
+                step_start = perf_counter()
+                actions, hs, shield_stats = self._pick_actions(obs, hs, eps)
                 next_obs, reward, done, info = self.env.step(actions)
-                ep_reward += reward
+                reward, info = self.shield.apply_reward_penalty(reward, info, shield_stats)
+                stats_start = perf_counter()
+                episode_stats.update(info)
+                episode_stats_time += perf_counter() - stats_start
 
                 self.buffer.push(
                     {
@@ -201,13 +246,15 @@ class HRVDNTrainer:
                         "reward": reward,
                         "next_obs": next_obs,
                         "done": done,
-                        "reward_ctx": {"sparse_reward": info["sparse_reward"]},
+                        "reward_ctx": {"sparse_reward": info.get("shield_penalized_sparse_reward", info["sparse_reward"])},
                     }
                 )
                 obs = next_obs
                 loss = self._train_step()
                 if loss is not None:
                     ep_losses.append(loss)
+                last_info = info
+                episode_step_time += perf_counter() - step_start
 
             if ep < self.cfg.train.dense_epochs:
                 eps = max(self.cfg.train.epsilon_min, eps - eps_decay)
@@ -217,34 +264,57 @@ class HRVDNTrainer:
             if ep % self.cfg.train.target_update_interval == 0:
                 self.target.load_state_dict(self.policy.state_dict())
 
+            phase = "dense" if ep < self.cfg.train.dense_epochs else "sparse"
+            episode_metrics = episode_stats.finalize(
+                last_info or {},
+                found_targets=len(self.env.found_targets),
+                shield_mode=self.cfg.shield.mode,
+            )
+            episode_metrics.update(self.shield.profile_summary(episode_step_time, episode_stats_time))
+            self.summary_logger.append(
+                {
+                    "split": "train",
+                    "epoch": ep,
+                    "phase": phase,
+                    "mode": self.cfg.shield.mode,
+                    "episodes": 1,
+                    **episode_metrics,
+                }
+            )
+
             if self.writer is not None:
-                self.writer.add_scalar("train/episode_reward", ep_reward, ep)
+                log_summary_scalars(self.writer, "train", episode_metrics, ep)
                 self.writer.add_scalar("train/epsilon", eps, ep)
-                self.writer.add_scalar("train/search_rate", info["search_rate"], ep)
-                self.writer.add_scalar("train/coverage_rate", info["coverage_rate"], ep)
-                self.writer.add_scalar("train/collisions", float(self.env.collisions), ep)
                 if ep_losses:
                     self.writer.add_scalar("train/loss", float(np.mean(ep_losses)), ep)
 
             mean_loss = float(np.mean(ep_losses)) if ep_losses else float("nan")
-            phase = "dense" if ep < self.cfg.train.dense_epochs else "sparse"
             print(
-                f"epoch={ep} phase={phase} eps={eps:.4f} reward={ep_reward:.3f} "
-                f"loss={mean_loss:.6f} search={info['search_rate']:.3f} "
-                f"coverage={info['coverage_rate']:.3f} collisions={float(self.env.collisions):.0f}"
+                f"epoch={ep} phase={phase} eps={eps:.4f} return={episode_metrics['episode_return']:.3f} "
+                f"orig_return={episode_metrics['original_episode_return']:.3f} loss={mean_loss:.6f} "
+                f"search={episode_metrics['search_rate']:.3f} coverage={episode_metrics['coverage_ratio']:.3f} "
+                f"collisions={episode_metrics['collision_count']:.0f} trigger_rate={episode_metrics['shield_trigger_rate']:.3f} "
+                f"near_miss={episode_metrics['near_miss_rate']:.3f} "
+                f"steps_per_sec={episode_metrics.get('perf_steps_per_sec', 0.0):.2f}"
             )
 
             if ep % 50 == 0:
                 eval_env = self._make_eval_env()
-                m = evaluate(eval_env, self.policy, episodes=2, device=self.device)
+                m = evaluate(eval_env, self.policy, episodes=2, device=self.device, shield=CentralizedSafetyShield(self.cfg))
                 history.append((ep, m))
+                self.summary_logger.append(
+                    {
+                        "split": "eval",
+                        "epoch": ep,
+                        "phase": phase,
+                        "mode": self.cfg.shield.mode,
+                        "episodes": 2,
+                        **m,
+                    }
+                )
                 print(f"epoch={ep} metrics={m}")
                 if self.writer is not None:
-                    self.writer.add_scalar("eval/search_rate", m["search_rate"], ep)
-                    self.writer.add_scalar("eval/coverage_rate", m["coverage_rate"], ep)
-                    self.writer.add_scalar("eval/collisions", m["collisions"], ep)
-                    self.writer.add_scalar("eval/avg_reward", m["avg_reward"], ep)
-                    self.writer.add_scalar("eval/error_rate", m["error_rate"], ep)
+                    log_summary_scalars(self.writer, "eval", m, ep)
                 if self.cfg.train.save_best and m["search_rate"] > self.best_search_rate:
                     self.best_search_rate = m["search_rate"]
                     self._save_checkpoint("best.pt", ep, eps, m)

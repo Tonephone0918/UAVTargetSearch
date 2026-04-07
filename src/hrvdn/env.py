@@ -277,7 +277,10 @@ class UAVSearchEnv:
 
         reward, info = self._calc_reward(target_grid)
         self.total_reward += reward
-        done = len(self.found_targets) == self.cfg.n_targets or self.t >= self.cfg.max_steps
+        all_targets_found = len(self.found_targets) == self.cfg.n_targets
+        done = self.t >= self.cfg.max_steps or (
+            self.cfg.terminate_on_all_targets_found and all_targets_found
+        )
         obs = self._build_obs()
         return obs, reward, done, info
 
@@ -337,15 +340,20 @@ class UAVSearchEnv:
             reward += self.rew_cfg.r4_entropy * (self.last_entropy - ent)
             self.last_entropy = ent
 
-            # r5 revisit pheromone reward follows the paper's map-wise sum.
+            # r5 revisit pheromone reward follows the paper's map-wise sum by
+            # default; an optional normalization keeps its scale comparable to
+            # the other reward terms in engineering experiments.
             dpm_gain = float(sum(m.dpm.sum() for m in self.maps))
+            dpm_reward = self.rew_cfg.r5_pheromone * dpm_gain
+            if self.rew_cfg.normalize_dpm_reward:
+                dpm_reward /= float(max(1, self.cfg.n_uavs * self.cfg.map_size * self.cfg.map_size))
 
             # r7 energy penalty: penalize turns unless the UAV is already locked onto a target.
             energy_turn_penalty = 0
             for i, (x, y, _) in enumerate(self.uavs):
                 if self.rew_cfg.use_energy_penalty and self.step_turns[i] and self.maps[i].tpm[x, y] <= self.cfg.xi_p:
                     energy_turn_penalty += 1
-            reward += self.rew_cfg.r5_pheromone * dpm_gain
+            reward += dpm_reward
 
             # r6 coverage reward uses the cumulative visited-area ratio.
             reward += self.rew_cfg.r6_coverage * float(self.coverage.mean())
@@ -353,7 +361,9 @@ class UAVSearchEnv:
 
         info = {
             "search_rate": len(self.found_targets) / self.cfg.n_targets,
+            "found_targets": float(len(self.found_targets)),
             "coverage_rate": float(self.coverage.mean()),
+            "coverage_ratio": float(self.coverage.mean()),
             "collisions": col,
             "uav_collisions": uav_collisions,
             "threat_collisions": threat_collisions,
@@ -361,6 +371,7 @@ class UAVSearchEnv:
             "new_found": new_found,
             "discovery_reward": float(discovery_reward),
             "collision_reward": float(collision_reward),
+            "dpm_reward": float(dpm_reward) if dense else 0.0,
             "sparse_reward": float(sparse_reward),
             "dense_mode": dense and not sparse,
         }

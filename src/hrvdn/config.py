@@ -34,6 +34,7 @@ class EnvConfig:
     patch_size: int = 11
     max_steps: int = 120
     strict_found_detection: bool = True
+    terminate_on_all_targets_found: bool = False
 
 
 @dataclass
@@ -49,6 +50,7 @@ class RewardConfig:
 
     use_compensation: bool = True
     use_energy_penalty: bool = True
+    normalize_dpm_reward: bool = False
 
 
 @dataclass
@@ -83,6 +85,7 @@ class MappoConfig:
     actor_lr_sparse: float = 1e-4
     critic_lr_sparse: float = 3e-4
     update_epochs: int = 4
+    num_minibatches: int = 4
     gae_lambda: float = 0.95
     clip_coef: float = 0.2
     entropy_coef: float = 0.01
@@ -92,8 +95,45 @@ class MappoConfig:
 
 
 @dataclass
+class ShieldConfig:
+    enabled: bool = False
+    mode: Literal["off", "safe", "recursive"] = "off"
+    log_stats: bool = True
+    penalty_coef: float = 1.0
+    near_miss_margin: float = 0.5
+    profile_enabled: bool = False
+    cache_enabled: bool = True
+    refine_enabled: bool = True
+    refine_margin: float = 0.5
+    candidate_top_k: int = 2
+    candidate_full_fallback: bool = False
+    local_uav_padding: float = 1.0
+    local_threat_padding: float = 1.0
+    threat_radius_inflation: float = 0.0
+    recursive_margin_threshold: float = 0.25
+    recursive_safe_action_threshold: int = 2
+    recursive_recent_window: int = 5
+    recursive_recent_trigger_threshold: int = 5
+    risk_score_enabled: bool = True
+    risk_weight_clear: float = 0.5
+    risk_weight_region: float = 0.3
+    risk_weight_hist: float = 0.2
+    risk_clearance_norm: float = 1.0
+    risk_hist_window: int = 5
+    risk_threshold: float = 0.5
+    risk_threat_count_norm: float = 3.0
+    legacy_recursive_gate: bool = False
+
+    # Reserved interface for later stages.
+    progressive_enabled: bool = False
+    lookahead_horizon: int = 1
+    risk_schedule_enabled: bool = False
+
+
+@dataclass
 class ExperimentConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     mappo: MappoConfig = field(default_factory=MappoConfig)
+    shield: ShieldConfig = field(default_factory=ShieldConfig)

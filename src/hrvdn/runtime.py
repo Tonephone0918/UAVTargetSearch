@@ -6,7 +6,7 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from .config import EnvConfig, ExperimentConfig, MappoConfig, RewardConfig, TrainConfig
+from .config import EnvConfig, ExperimentConfig, MappoConfig, RewardConfig, ShieldConfig, TrainConfig
 from .env import UAVSearchEnv
 from .model import AgentQNet, MAPPOActor, MAPPOCritic
 
@@ -24,7 +24,8 @@ def config_from_dict(raw_cfg: Dict[str, Any]) -> ExperimentConfig:
     rew_cfg = RewardConfig(**raw_cfg.get("reward", {}))
     train_cfg = TrainConfig(**raw_cfg.get("train", {}))
     mappo_cfg = MappoConfig(**raw_cfg.get("mappo", {}))
-    return ExperimentConfig(env=env_cfg, reward=rew_cfg, train=train_cfg, mappo=mappo_cfg)
+    shield_cfg = ShieldConfig(**raw_cfg.get("shield", {}))
+    return ExperimentConfig(env=env_cfg, reward=rew_cfg, train=train_cfg, mappo=mappo_cfg, shield=shield_cfg)
 
 
 def apply_env_overrides(
@@ -35,6 +36,7 @@ def apply_env_overrides(
     n_targets: int | None = None,
     n_threats: int | None = None,
     max_steps: int | None = None,
+    terminate_on_all_targets_found: bool | None = None,
     seed: int | None = None,
 ) -> ExperimentConfig:
     if map_size is not None:
@@ -47,6 +49,8 @@ def apply_env_overrides(
         cfg.env.n_threats = n_threats
     if max_steps is not None:
         cfg.env.max_steps = max_steps
+    if terminate_on_all_targets_found is not None:
+        cfg.env.terminate_on_all_targets_found = terminate_on_all_targets_found
     if seed is not None:
         cfg.train.seed = seed
     return cfg

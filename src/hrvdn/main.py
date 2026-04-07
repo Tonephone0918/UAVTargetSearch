@@ -53,14 +53,147 @@ def main():
     p.add_argument("--ablation", choices=["height", "compensation", "energy", "reward"], default=None)
     p.add_argument("--dense-epochs", type=int, default=None)
     p.add_argument("--sparse-epochs", type=int, default=None)
+    p.add_argument(
+        "--normalize-dpm-reward",
+        action="store_true",
+        help="Normalize the DPM reward by n_uavs * map_size * map_size.",
+    )
     p.add_argument("--map-size", type=int, default=None)
     p.add_argument("--n-uavs", type=int, default=None)
     p.add_argument("--n-targets", type=int, default=None)
     p.add_argument("--n-threats", type=int, default=None)
     p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument(
+        "--terminate-on-all-found",
+        action="store_true",
+        help="End an episode immediately when all targets have been found.",
+    )
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    p.add_argument(
+        "--shield-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable the centralized safety shield before env.step().",
+    )
+    p.add_argument(
+        "--shield-mode",
+        choices=["off", "safe", "recursive"],
+        default=None,
+        help="Shield mode: off, hard-safe-only ('safe' mode), or recursive A_rec upgrade on top of A_hard.",
+    )
+    p.add_argument(
+        "--shield-log-stats",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Log shield statistics to stdout / TensorBoard when available.",
+    )
+    p.add_argument(
+        "--shield-profile-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable lightweight shield timing/profile statistics.",
+    )
+    p.add_argument(
+        "--shield-cache-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable lightweight caches for A_hard-set and future-safe queries.",
+    )
+    p.add_argument(
+        "--shield-refine-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable exact gray-zone refinement after cheap rule-based A_hard masking.",
+    )
+    p.add_argument(
+        "--shield-refine-margin",
+        type=float,
+        default=None,
+        help="Only gray-zone candidates with clearance <= margin are exactly re-checked.",
+    )
+    p.add_argument("--shield-penalty-coef", type=float, default=None, help="Penalty coefficient for shield intervention.")
+    p.add_argument(
+        "--shield-near-miss-margin",
+        type=float,
+        default=None,
+        help="Near-miss margin threshold used only for safety statistics.",
+    )
+    p.add_argument(
+        "--shield-risk-score-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable the continuous clear+region+hist risk score.",
+    )
+    p.add_argument(
+        "--shield-risk-weight-clear",
+        type=float,
+        default=None,
+        help="Weight for the clearance-risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-weight-region",
+        type=float,
+        default=None,
+        help="Weight for the region-risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-weight-hist",
+        type=float,
+        default=None,
+        help="Weight for the history-risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-clearance-norm",
+        type=float,
+        default=None,
+        help="Normalization constant M_c for clearance risk.",
+    )
+    p.add_argument(
+        "--shield-risk-hist-window",
+        type=int,
+        default=None,
+        help="Sliding window size W for history risk.",
+    )
+    p.add_argument(
+        "--shield-risk-threshold",
+        type=float,
+        default=None,
+        help="Recursive gate threshold eta for the continuous risk score.",
+    )
+    p.add_argument(
+        "--shield-risk-threat-count-norm",
+        type=float,
+        default=None,
+        help="Normalization constant for local threat-count risk.",
+    )
+    p.add_argument(
+        "--shield-legacy-recursive-gate",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use the previous binary high-risk gate instead of the continuous risk score.",
+    )
+    p.add_argument(
+        "--shield-progressive-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Reserved hook for later progressive shielding work.",
+    )
+    p.add_argument(
+        "--shield-lookahead-horizon",
+        type=int,
+        default=None,
+        help="Reserved hook for later look-ahead shielding work.",
+    )
+    p.add_argument(
+        "--shield-risk-schedule-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Reserved hook for later risk-aware scheduling work.",
+    )
     p.add_argument("--resume", type=str, default=None, help="Path to checkpoint, e.g. checkpoints/latest.pt")
+    p.add_argument("--checkpoint-dir", type=str, default=None, help="Directory for saved checkpoints.")
+    p.add_argument("--tensorboard-dir", type=str, default=None, help="Directory for TensorBoard logs.")
     p.add_argument("--skip-train", action="store_true", help="Skip training and only run validation/report.")
     p.add_argument("--validate-checkpoint", type=str, default=None, help="Evaluate a checkpoint path.")
     p.add_argument("--eval-episodes", type=int, default=10, help="Episodes for checkpoint validation.")
@@ -105,10 +238,63 @@ def main():
             cfg.train.checkpoint_dir = "checkpoints/mappo"
         if cfg.train.tensorboard_dir == "runs/hrvdn":
             cfg.train.tensorboard_dir = "runs/mappo"
+    if args.checkpoint_dir is not None:
+        cfg.train.checkpoint_dir = args.checkpoint_dir
+    if args.tensorboard_dir is not None:
+        cfg.train.tensorboard_dir = args.tensorboard_dir
     if args.dense_epochs is not None:
         cfg.train.dense_epochs = args.dense_epochs
     if args.sparse_epochs is not None:
         cfg.train.sparse_epochs = args.sparse_epochs
+    if args.normalize_dpm_reward:
+        cfg.reward.normalize_dpm_reward = True
+    if args.shield_enabled is not None:
+        cfg.shield.enabled = args.shield_enabled
+    if args.shield_mode is not None:
+        cfg.shield.mode = args.shield_mode
+        cfg.shield.enabled = args.shield_mode != "off"
+    elif cfg.shield.enabled and cfg.shield.mode == "off":
+        cfg.shield.mode = "safe"
+    elif not cfg.shield.enabled:
+        cfg.shield.mode = "off"
+    if args.shield_log_stats is not None:
+        cfg.shield.log_stats = args.shield_log_stats
+    if args.shield_profile_enabled is not None:
+        cfg.shield.profile_enabled = args.shield_profile_enabled
+    if args.shield_cache_enabled is not None:
+        cfg.shield.cache_enabled = args.shield_cache_enabled
+    if args.shield_refine_enabled is not None:
+        cfg.shield.refine_enabled = args.shield_refine_enabled
+    if args.shield_refine_margin is not None:
+        cfg.shield.refine_margin = args.shield_refine_margin
+    if args.shield_penalty_coef is not None:
+        cfg.shield.penalty_coef = args.shield_penalty_coef
+    if args.shield_near_miss_margin is not None:
+        cfg.shield.near_miss_margin = args.shield_near_miss_margin
+    if args.shield_risk_score_enabled is not None:
+        cfg.shield.risk_score_enabled = args.shield_risk_score_enabled
+    if args.shield_risk_weight_clear is not None:
+        cfg.shield.risk_weight_clear = args.shield_risk_weight_clear
+    if args.shield_risk_weight_region is not None:
+        cfg.shield.risk_weight_region = args.shield_risk_weight_region
+    if args.shield_risk_weight_hist is not None:
+        cfg.shield.risk_weight_hist = args.shield_risk_weight_hist
+    if args.shield_risk_clearance_norm is not None:
+        cfg.shield.risk_clearance_norm = args.shield_risk_clearance_norm
+    if args.shield_risk_hist_window is not None:
+        cfg.shield.risk_hist_window = args.shield_risk_hist_window
+    if args.shield_risk_threshold is not None:
+        cfg.shield.risk_threshold = args.shield_risk_threshold
+    if args.shield_risk_threat_count_norm is not None:
+        cfg.shield.risk_threat_count_norm = args.shield_risk_threat_count_norm
+    if args.shield_legacy_recursive_gate is not None:
+        cfg.shield.legacy_recursive_gate = args.shield_legacy_recursive_gate
+    if args.shield_progressive_enabled is not None:
+        cfg.shield.progressive_enabled = args.shield_progressive_enabled
+    if args.shield_lookahead_horizon is not None:
+        cfg.shield.lookahead_horizon = args.shield_lookahead_horizon
+    if args.shield_risk_schedule_enabled is not None:
+        cfg.shield.risk_schedule_enabled = args.shield_risk_schedule_enabled
     apply_env_overrides(
         cfg,
         map_size=args.map_size,
@@ -116,6 +302,7 @@ def main():
         n_targets=args.n_targets,
         n_threats=args.n_threats,
         max_steps=args.max_steps,
+        terminate_on_all_targets_found=True if args.terminate_on_all_found else None,
         seed=args.seed,
     )
     env_override_kwargs = {
@@ -124,6 +311,7 @@ def main():
         "n_targets": args.n_targets,
         "n_threats": args.n_threats,
         "max_steps": args.max_steps,
+        "terminate_on_all_targets_found": True if args.terminate_on_all_found else None,
         "seed": args.seed,
     }
 

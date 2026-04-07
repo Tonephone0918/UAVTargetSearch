@@ -16,6 +16,7 @@ from .runtime import (
     load_checkpoint_policy,
     resolve_device,
 )
+from .shield import CentralizedSafetyShield
 
 
 @torch.no_grad()
@@ -38,21 +39,49 @@ def evaluate_checkpoint(
     apply_env_overrides(cfg, **(env_overrides or {}))
 
     env = UAVSearchEnv(cfg.env, cfg.reward, seed=cfg.train.seed)
+    shield = CentralizedSafetyShield(cfg)
     if algo == "mappo":
         actor, critic = build_mappo_from_env(cfg, env, run_device)
         load_checkpoint_module(actor, ckpt["actor_state_dict"], checkpoint_path, "MAPPO actor")
         actor.eval()
         critic.eval()
-        return evaluate_actor_policy(env, actor, episodes=episodes, device=run_device)
+        return evaluate_actor_policy(env, actor, episodes=episodes, device=run_device, shield=shield)
 
     policy = build_policy_from_env(cfg, env, run_device)
     load_checkpoint_policy(policy, ckpt["policy_state_dict"], checkpoint_path)
     policy.eval()
-    return evaluate(env, policy, episodes=episodes, device=run_device)
+    return evaluate(env, policy, episodes=episodes, device=run_device, shield=shield)
 
 
 def format_metrics(metrics: Dict[str, float]) -> str:
-    order = ["search_rate", "coverage_rate", "collisions", "avg_reward", "error_rate"]
+    order = [
+        "search_rate",
+        "found_targets",
+        "coverage_ratio",
+        "collision_count",
+        "episode_return",
+        "original_episode_return",
+        "shield_trigger_rate",
+        "action_replacement_rate",
+        "avg_risk_score",
+        "avg_risk_clear",
+        "avg_risk_region",
+        "avg_risk_hist",
+        "high_risk_rate",
+        "recursive_gate_rate",
+        "near_miss_rate",
+        "avg_hard_action_count",
+        "avg_safe_action_count",
+        "avg_rec_action_count",
+        "dead_end_hard_rate",
+        "dead_end_safe_rate",
+        "dead_end_rec_rate",
+        "shield_penalty_rate",
+        "error_rate",
+        "coverage_rate",
+        "collisions",
+        "avg_reward",
+    ]
     parts = []
     for k in order:
         if k in metrics:
