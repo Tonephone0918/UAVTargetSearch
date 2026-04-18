@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch.distributions import Categorical
 
-from .config import ExperimentConfig
+from .config import ExperimentConfig, canonicalize_risk_variant
 from .env import UAV_H_DIRS, UAVSearchEnv, V_DIRS
 
 
@@ -386,6 +386,7 @@ class CentralizedSafetyShield:
             hard_actions = self._legacy_enumerate_hard_actions(env, state, agent_idx, base_actions)
             hard_meta = {
                 "clearances": {},
+                "valid_action_count": int(len(hard_actions)),
                 "local_uav_count": 0,
                 "local_threat_count": 0,
                 "near_boundary": False,
@@ -429,6 +430,7 @@ class CentralizedSafetyShield:
         if len(action_ids) == 0:
             empty_meta = {
                 "clearances": {},
+                "valid_action_count": 0,
                 "local_uav_count": 0,
                 "local_threat_count": 0,
                 "near_boundary": True,
@@ -520,11 +522,13 @@ class CentralizedSafetyShield:
         )
         hard_meta = {
             "clearances": clearances,
+            "valid_action_count": int(len(action_ids)),
             "local_uav_count": int(local_uav_count),
             "local_threat_count": int(local_threat_count),
             "near_boundary": bool(boundary_margin <= 1),
             "crowded": bool(local_uav_count >= 2),
             "min_candidate_clearance": float(min(clearances.values())) if clearances else float(self.cfg.env.map_size),
+            "max_candidate_clearance": float(max(clearances.values())) if clearances else float(self.cfg.env.map_size),
             "base_margins": base_margins,
         }
 
@@ -576,10 +580,31 @@ class CentralizedSafetyShield:
         return {
             "score": 0.0,
             "clear": 0.0,
+            "clear_gap": 0.0,
+            "fragility": 0.0,
             "region": 0.0,
             "hist": 0.0,
+            "support": 0.0,
             "high_risk": False,
         }
+
+    def _clearance_risk_from_value(self, clearance: float | None, *, norm: float | None = None) -> float:
+        if clearance is None:
+            return 1.0
+        value = float(clearance)
+        if not np.isfinite(value):
+            return 1.0
+        scale = max(float(self.cfg.shield.risk_clearance_norm if norm is None else norm), 1e-6)
+        return float(np.clip(1.0 - value / scale, 0.0, 1.0))
+
+    def _clearance_gap_risk_from_value(self, clearance_gap: float | None) -> float:
+        if clearance_gap is None:
+            return 1.0
+        gap = float(clearance_gap)
+        if not np.isfinite(gap):
+            return 1.0
+        norm = max(float(self.cfg.shield.risk_clear_gap_norm), 1e-6)
+        return float(np.clip(gap / norm, 0.0, 1.0))
 
     def compute_clear_risk(self, hard_actions: Sequence[int], hard_meta: Dict[str, Any]) -> float:
         # The v1 risk is post-A_hard / pre-A_rec: clearance is reused from the
@@ -588,13 +613,67 @@ class CentralizedSafetyShield:
         if not hard_actions:
             return 1.0
         min_candidate_clearance = hard_meta.get("min_candidate_clearance")
-        if min_candidate_clearance is None:
+        return self._clearance_risk_from_value(min_candidate_clearance)
+
+    def compute_proposed_clear_risk(
+        self,
+        proposed_action: int,
+        hard_actions: Sequence[int],
+        hard_meta: Dict[str, Any],
+    ) -> float:
+        # risk_base aligns the primary clear term with the actor's current proposal.
+        # If the proposal is already outside A_hard, A_hard will intervene anyway,
+        # so this upgrade-specific term stays inactive and other cheap terms can
+        # still decide whether A_rec is worth the extra cost.
+        if not hard_actions:
             return 1.0
-        clearance = float(min_candidate_clearance)
-        if not np.isfinite(clearance):
+        if int(proposed_action) not in {int(a) for a in hard_actions}:
+            return 0.0
+        clearances = hard_meta.get("clearances", {})
+        return self._clearance_risk_from_value(clearances.get(int(proposed_action)))
+
+    def compute_clear_gap_risk(
+        self,
+        proposed_action: int,
+        hard_actions: Sequence[int],
+        hard_meta: Dict[str, Any],
+    ) -> float:
+        if not hard_actions:
             return 1.0
-        norm = max(float(self.cfg.shield.risk_clearance_norm), 1e-6)
-        return float(np.clip(1.0 - clearance / norm, 0.0, 1.0))
+        if int(proposed_action) not in {int(a) for a in hard_actions}:
+            return 0.0
+        clearances = hard_meta.get("clearances", {})
+        proposed_clearance = clearances.get(int(proposed_action))
+        if proposed_clearance is None or not np.isfinite(float(proposed_clearance)):
+            return 1.0
+        best_clearance = hard_meta.get("max_candidate_clearance")
+        if best_clearance is None:
+            finite_values = [float(v) for v in clearances.values() if np.isfinite(float(v))]
+            best_clearance = max(finite_values) if finite_values else None
+        if best_clearance is None:
+            return 1.0
+        gap = max(0.0, float(best_clearance) - float(proposed_clearance))
+        return self._clearance_gap_risk_from_value(gap)
+
+    def compute_support_risk(self, hard_actions: Sequence[int], hard_meta: Dict[str, Any]) -> float:
+        if not hard_actions:
+            return 1.0
+        clearances = hard_meta.get("clearances", {})
+        if not clearances:
+            return 1.0
+        robust_margin = float(self.cfg.shield.risk_support_clearance_margin)
+        robust_count = 0
+        for action in hard_actions:
+            clearance = clearances.get(int(action))
+            if clearance is not None and np.isfinite(float(clearance)) and float(clearance) >= robust_margin:
+                robust_count += 1
+        return float(1.0 - robust_count / max(len(hard_actions), 1))
+
+    def compute_fragility_risk(self, hard_actions: Sequence[int], hard_meta: Dict[str, Any]) -> float:
+        valid_action_count = int(hard_meta.get("valid_action_count", len(hard_actions)))
+        if valid_action_count <= 0:
+            return 1.0
+        return float(np.clip(1.0 - len(hard_actions) / max(valid_action_count, 1), 0.0, 1.0))
 
     def compute_region_risk(self, hard_meta: Dict[str, Any]) -> float:
         boundary = 1.0 if bool(hard_meta.get("near_boundary", False)) else 0.0
@@ -616,26 +695,63 @@ class CentralizedSafetyShield:
         agent_idx: int,
         hard_actions: Sequence[int],
         hard_meta: Dict[str, Any],
+        proposed_action: int | None = None,
     ) -> Dict[str, float]:
         if not self.risk_score_enabled:
             return self._zero_agent_risk()
 
-        clear_risk = self.compute_clear_risk(hard_actions, hard_meta)
+        risk_variant = canonicalize_risk_variant(str(getattr(self.cfg.shield, "risk_variant", "v1")))
         region_risk = self.compute_region_risk(hard_meta)
-        hist_risk = self.compute_hist_risk(agent_idx)
-        score = (
-            float(self.cfg.shield.risk_weight_clear) * clear_risk
-            + float(self.cfg.shield.risk_weight_region) * region_risk
-            + float(self.cfg.shield.risk_weight_hist) * hist_risk
-        )
+        hist_risk = 0.0
+        clear_risk = 0.0
+        clear_gap_risk = 0.0
+        fragility_risk = 0.0
+        support_risk = 0.0
+
+        if risk_variant == "risk_base":
+            chosen_action = -1 if proposed_action is None else int(proposed_action)
+            clear_risk = self.compute_proposed_clear_risk(chosen_action, hard_actions, hard_meta)
+            clear_gap_risk = self.compute_clear_gap_risk(chosen_action, hard_actions, hard_meta)
+            support_risk = self.compute_support_risk(hard_actions, hard_meta)
+            score = (
+                float(self.cfg.shield.risk_base_weight_prop_clear) * clear_risk
+                + float(self.cfg.shield.risk_base_weight_clear_gap) * clear_gap_risk
+                + float(self.cfg.shield.risk_base_weight_support) * support_risk
+                + float(self.cfg.shield.risk_base_weight_region) * region_risk
+            )
+        elif risk_variant == "v_next2":
+            # v_next2 keeps the proposed-action clearance view, but replaces the
+            # proposed-vs-best gap term with A_hard fragility because the
+            # eligible-only offline validation showed clear_gap hurting ranking.
+            chosen_action = -1 if proposed_action is None else int(proposed_action)
+            clear_risk = self.compute_proposed_clear_risk(chosen_action, hard_actions, hard_meta)
+            fragility_risk = self.compute_fragility_risk(hard_actions, hard_meta)
+            support_risk = self.compute_support_risk(hard_actions, hard_meta)
+            score = (
+                float(self.cfg.shield.risk_vnext2_weight_prop_clear) * clear_risk
+                + float(self.cfg.shield.risk_vnext2_weight_fragility) * fragility_risk
+                + float(self.cfg.shield.risk_vnext2_weight_support) * support_risk
+                + float(self.cfg.shield.risk_vnext2_weight_region) * region_risk
+            )
+        else:
+            clear_risk = self.compute_clear_risk(hard_actions, hard_meta)
+            hist_risk = self.compute_hist_risk(agent_idx)
+            score = (
+                float(self.cfg.shield.risk_weight_clear) * clear_risk
+                + float(self.cfg.shield.risk_weight_region) * region_risk
+                + float(self.cfg.shield.risk_weight_hist) * hist_risk
+            )
         # TODO: extend with feasibility-proxy and uncertainty / preference-conflict
         # terms while keeping the risk path cheap and fully reusable from shield
         # local geometry / cache statistics.
         return {
             "score": float(score),
             "clear": float(clear_risk),
+            "clear_gap": float(clear_gap_risk),
+            "fragility": float(fragility_risk),
             "region": float(region_risk),
             "hist": float(hist_risk),
+            "support": float(support_risk),
             "high_risk": bool(score >= float(self.cfg.shield.risk_threshold)),
         }
 
@@ -984,8 +1100,11 @@ class CentralizedSafetyShield:
                 "shield_penalty": 0.0,
                 "risk_score": 0.0,
                 "risk_clear": 0.0,
+                "risk_clear_gap": 0.0,
+                "risk_fragility": 0.0,
                 "risk_region": 0.0,
                 "risk_hist": 0.0,
+                "risk_support": 0.0,
                 "high_risk_agents": 0,
                 "high_risk_rate_step": 0.0,
                 "recursive_gate_agents": 0,
@@ -1008,8 +1127,11 @@ class CentralizedSafetyShield:
         recursive_gate_ran = False
         risk_scores: List[float] = []
         risk_clear_scores: List[float] = []
+        risk_clear_gap_scores: List[float] = []
+        risk_fragility_scores: List[float] = []
         risk_region_scores: List[float] = []
         risk_hist_scores: List[float] = []
+        risk_support_scores: List[float] = []
         high_risk_agents = 0
         recursive_gate_agents = 0
 
@@ -1027,11 +1149,14 @@ class CentralizedSafetyShield:
                 planned_next_positions=planned_next_positions,
             )
             hard_sizes.append(len(hard_actions))
-            risk_info = self.compute_agent_risk(agent_idx, hard_actions, hard_meta)
+            risk_info = self.compute_agent_risk(agent_idx, hard_actions, hard_meta, proposed_action=final_actions[agent_idx])
             risk_scores.append(float(risk_info["score"]))
             risk_clear_scores.append(float(risk_info["clear"]))
+            risk_clear_gap_scores.append(float(risk_info.get("clear_gap", 0.0)))
+            risk_fragility_scores.append(float(risk_info.get("fragility", 0.0)))
             risk_region_scores.append(float(risk_info["region"]))
             risk_hist_scores.append(float(risk_info["hist"]))
+            risk_support_scores.append(float(risk_info.get("support", 0.0)))
             high_risk_agents += int(bool(risk_info.get("high_risk", False)))
 
             rec_actions: List[int] = []
@@ -1055,7 +1180,8 @@ class CentralizedSafetyShield:
                     "used_legacy_recursive_gate": bool(self._uses_legacy_recursive_gate()),
                 }
             recursive_gate_ran = recursive_gate_ran or (self.profile["recursive_gate_runs"] > gate_runs_before)
-            rec_sizes.append(len(rec_actions))
+            if self.cfg.shield.mode == "recursive":
+                rec_sizes.append(len(rec_actions))
 
             candidate_actions = hard_actions
             if self.cfg.shield.mode == "recursive":
@@ -1157,8 +1283,11 @@ class CentralizedSafetyShield:
             "recursive_gate_run": bool(recursive_gate_ran),
             "risk_score": float(np.mean(risk_scores)) if risk_scores else 0.0,
             "risk_clear": float(np.mean(risk_clear_scores)) if risk_clear_scores else 0.0,
+            "risk_clear_gap": float(np.mean(risk_clear_gap_scores)) if risk_clear_gap_scores else 0.0,
+            "risk_fragility": float(np.mean(risk_fragility_scores)) if risk_fragility_scores else 0.0,
             "risk_region": float(np.mean(risk_region_scores)) if risk_region_scores else 0.0,
             "risk_hist": float(np.mean(risk_hist_scores)) if risk_hist_scores else 0.0,
+            "risk_support": float(np.mean(risk_support_scores)) if risk_support_scores else 0.0,
             "high_risk_agents": int(high_risk_agents),
             "high_risk_rate_step": float(high_risk_agents / max(1, self.cfg.env.n_uavs)),
             "recursive_gate_agents": int(recursive_gate_agents),

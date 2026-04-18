@@ -56,8 +56,11 @@ SUMMARY_CSV_FIELDS = [
     "shield_agent_trigger_count",
     "avg_risk_score",
     "avg_risk_clear",
+    "avg_risk_clear_gap",
+    "avg_risk_fragility",
     "avg_risk_region",
     "avg_risk_hist",
+    "avg_risk_support",
     "high_risk_agent_count",
     "high_risk_rate",
     "recursive_gate_agent_count",
@@ -126,8 +129,11 @@ class EpisodeStatsAccumulator:
         self.min_rec_action_counts: list[float] = []
         self.risk_scores: list[float] = []
         self.risk_clear_scores: list[float] = []
+        self.risk_clear_gap_scores: list[float] = []
+        self.risk_fragility_scores: list[float] = []
         self.risk_region_scores: list[float] = []
         self.risk_hist_scores: list[float] = []
+        self.risk_support_scores: list[float] = []
         self.high_risk_agent_count = 0
         self.recursive_gate_agent_count = 0
 
@@ -163,8 +169,11 @@ class EpisodeStatsAccumulator:
         self.min_rec_action_counts.append(float(info.get("min_rec_action_count_step", info.get("rec_action_count", 0.0))))
         self.risk_scores.append(float(info.get("risk_score", 0.0)))
         self.risk_clear_scores.append(float(info.get("risk_clear", 0.0)))
+        self.risk_clear_gap_scores.append(float(info.get("risk_clear_gap", 0.0)))
+        self.risk_fragility_scores.append(float(info.get("risk_fragility", 0.0)))
         self.risk_region_scores.append(float(info.get("risk_region", 0.0)))
         self.risk_hist_scores.append(float(info.get("risk_hist", 0.0)))
+        self.risk_support_scores.append(float(info.get("risk_support", 0.0)))
         self.high_risk_agent_count += int(info.get("high_risk_agents", 0))
         self.recursive_gate_agent_count += int(info.get("recursive_gate_agents", 0))
         self.total_agent_steps += int(info.get("risk_agent_count", 0))
@@ -215,8 +224,11 @@ class EpisodeStatsAccumulator:
             "shield_agent_trigger_count": float(self.shield_agent_trigger_count),
             "avg_risk_score": _safe_mean(self.risk_scores),
             "avg_risk_clear": _safe_mean(self.risk_clear_scores),
+            "avg_risk_clear_gap": _safe_mean(self.risk_clear_gap_scores),
+            "avg_risk_fragility": _safe_mean(self.risk_fragility_scores),
             "avg_risk_region": _safe_mean(self.risk_region_scores),
             "avg_risk_hist": _safe_mean(self.risk_hist_scores),
+            "avg_risk_support": _safe_mean(self.risk_support_scores),
             "high_risk_agent_count": float(self.high_risk_agent_count),
             "high_risk_rate": float(self.high_risk_agent_count / agent_steps),
             "recursive_gate_agent_count": float(self.recursive_gate_agent_count),
@@ -269,8 +281,11 @@ def log_summary_scalars(writer, split: str, metrics: Dict[str, float], step: int
         "shield_fallback_count",
         "avg_risk_score",
         "avg_risk_clear",
+        "avg_risk_clear_gap",
+        "avg_risk_fragility",
         "avg_risk_region",
         "avg_risk_hist",
+        "avg_risk_support",
         "high_risk_agent_count",
         "high_risk_rate",
         "recursive_gate_agent_count",
@@ -312,6 +327,10 @@ def log_summary_scalars(writer, split: str, metrics: Dict[str, float], step: int
         writer.add_scalar("shield/a_safe_size", float(metrics["avg_safe_action_count"]), step)
         writer.add_scalar("shield/a_rec_size", float(metrics["avg_rec_action_count"]), step)
         writer.add_scalar("shield/risk_score", float(metrics["avg_risk_score"]), step)
+        writer.add_scalar("shield/risk_clear", float(metrics["avg_risk_clear"]), step)
+        writer.add_scalar("shield/risk_clear_gap", float(metrics.get("avg_risk_clear_gap", 0.0)), step)
+        writer.add_scalar("shield/risk_fragility", float(metrics.get("avg_risk_fragility", 0.0)), step)
+        writer.add_scalar("shield/risk_support", float(metrics.get("avg_risk_support", 0.0)), step)
         writer.add_scalar("shield/high_risk_rate", float(metrics["high_risk_rate"]), step)
         writer.add_scalar("shield/recursive_gate_rate", float(metrics["recursive_gate_rate"]), step)
         writer.add_scalar("shield/min_uav_uav_margin", float(metrics["episode_min_uav_margin"]), step)

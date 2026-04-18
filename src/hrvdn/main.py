@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .config import ExperimentConfig
+from .config import ExperimentConfig, canonicalize_risk_variant
 from .mappo_trainer import MAPPOTrainer
 from .rollout_vis import generate_baseline_rollout_html, generate_rollout_html
 from .runtime import apply_env_overrides
@@ -49,10 +49,10 @@ def run_ablation(kind: str, device: str, cfg: ExperimentConfig, algo: str):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--algo", choices=["hrvdn", "mappo"], default="hrvdn")
+    p.add_argument("--algo", choices=["hrvdn", "mappo"], default="mappo")
     p.add_argument("--ablation", choices=["height", "compensation", "energy", "reward"], default=None)
-    p.add_argument("--dense-epochs", type=int, default=None)
-    p.add_argument("--sparse-epochs", type=int, default=None)
+    p.add_argument("--dense-epochs", type=int, default=2000)
+    p.add_argument("--sparse-epochs", type=int, default=0)
     p.add_argument(
         "--normalize-dpm-reward",
         action="store_true",
@@ -123,7 +123,13 @@ def main():
         "--shield-risk-score-enabled",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable the continuous clear+region+hist risk score.",
+        help="Enable the configured continuous risk score used to gate A_hard -> A_rec.",
+    )
+    p.add_argument(
+        "--shield-risk-variant",
+        choices=["v1", "risk_base", "v_next", "v_next2"],
+        default=None,
+        help="Risk variant: baseline v1 clear+region+hist, risk_base prop_clear+clear_gap+support+region, or v_next2 prop_clear+fragility+support+region. Legacy alias v_next is still accepted.",
     )
     p.add_argument(
         "--shield-risk-weight-clear",
@@ -148,6 +154,74 @@ def main():
         type=float,
         default=None,
         help="Normalization constant M_c for clearance risk.",
+    )
+    p.add_argument(
+        "--shield-risk-clear-gap-norm",
+        type=float,
+        default=None,
+        help="Normalization constant for the risk_base proposed-vs-best clearance gap risk.",
+    )
+    p.add_argument(
+        "--shield-risk-support-clearance-margin",
+        type=float,
+        default=None,
+        help="Minimum clearance treated as robust support inside A_hard for the risk_base support-risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-base-weight-prop-clear",
+        "--shield-risk-vnext-weight-prop-clear",
+        dest="shield_risk_base_weight_prop_clear",
+        type=float,
+        default=None,
+        help="Weight for the risk_base proposed-action clearance risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-base-weight-clear-gap",
+        "--shield-risk-vnext-weight-clear-gap",
+        dest="shield_risk_base_weight_clear_gap",
+        type=float,
+        default=None,
+        help="Weight for the risk_base proposed-vs-best clearance gap term.",
+    )
+    p.add_argument(
+        "--shield-risk-base-weight-support",
+        "--shield-risk-vnext-weight-support",
+        dest="shield_risk_base_weight_support",
+        type=float,
+        default=None,
+        help="Weight for the risk_base robust-support risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-base-weight-region",
+        "--shield-risk-vnext-weight-region",
+        dest="shield_risk_base_weight_region",
+        type=float,
+        default=None,
+        help="Weight for the risk_base region-risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-vnext2-weight-prop-clear",
+        type=float,
+        default=None,
+        help="Weight for the v_next2 proposed-action clearance risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-vnext2-weight-fragility",
+        type=float,
+        default=None,
+        help="Weight for the v_next2 hard-set fragility term.",
+    )
+    p.add_argument(
+        "--shield-risk-vnext2-weight-support",
+        type=float,
+        default=None,
+        help="Weight for the v_next2 robust-support risk term.",
+    )
+    p.add_argument(
+        "--shield-risk-vnext2-weight-region",
+        type=float,
+        default=None,
+        help="Weight for the v_next2 region-risk term.",
     )
     p.add_argument(
         "--shield-risk-hist-window",
@@ -273,6 +347,8 @@ def main():
         cfg.shield.near_miss_margin = args.shield_near_miss_margin
     if args.shield_risk_score_enabled is not None:
         cfg.shield.risk_score_enabled = args.shield_risk_score_enabled
+    if args.shield_risk_variant is not None:
+        cfg.shield.risk_variant = canonicalize_risk_variant(args.shield_risk_variant)
     if args.shield_risk_weight_clear is not None:
         cfg.shield.risk_weight_clear = args.shield_risk_weight_clear
     if args.shield_risk_weight_region is not None:
@@ -281,6 +357,26 @@ def main():
         cfg.shield.risk_weight_hist = args.shield_risk_weight_hist
     if args.shield_risk_clearance_norm is not None:
         cfg.shield.risk_clearance_norm = args.shield_risk_clearance_norm
+    if args.shield_risk_clear_gap_norm is not None:
+        cfg.shield.risk_clear_gap_norm = args.shield_risk_clear_gap_norm
+    if args.shield_risk_support_clearance_margin is not None:
+        cfg.shield.risk_support_clearance_margin = args.shield_risk_support_clearance_margin
+    if args.shield_risk_base_weight_prop_clear is not None:
+        cfg.shield.risk_base_weight_prop_clear = args.shield_risk_base_weight_prop_clear
+    if args.shield_risk_base_weight_clear_gap is not None:
+        cfg.shield.risk_base_weight_clear_gap = args.shield_risk_base_weight_clear_gap
+    if args.shield_risk_base_weight_support is not None:
+        cfg.shield.risk_base_weight_support = args.shield_risk_base_weight_support
+    if args.shield_risk_base_weight_region is not None:
+        cfg.shield.risk_base_weight_region = args.shield_risk_base_weight_region
+    if args.shield_risk_vnext2_weight_prop_clear is not None:
+        cfg.shield.risk_vnext2_weight_prop_clear = args.shield_risk_vnext2_weight_prop_clear
+    if args.shield_risk_vnext2_weight_fragility is not None:
+        cfg.shield.risk_vnext2_weight_fragility = args.shield_risk_vnext2_weight_fragility
+    if args.shield_risk_vnext2_weight_support is not None:
+        cfg.shield.risk_vnext2_weight_support = args.shield_risk_vnext2_weight_support
+    if args.shield_risk_vnext2_weight_region is not None:
+        cfg.shield.risk_vnext2_weight_region = args.shield_risk_vnext2_weight_region
     if args.shield_risk_hist_window is not None:
         cfg.shield.risk_hist_window = args.shield_risk_hist_window
     if args.shield_risk_threshold is not None:
@@ -314,6 +410,70 @@ def main():
         "terminate_on_all_targets_found": True if args.terminate_on_all_found else None,
         "seed": args.seed,
     }
+    shield_override_kwargs = {}
+    if args.shield_enabled is not None or args.shield_mode is not None:
+        shield_override_kwargs["enabled"] = cfg.shield.enabled
+        shield_override_kwargs["mode"] = cfg.shield.mode
+    if args.shield_log_stats is not None:
+        shield_override_kwargs["log_stats"] = cfg.shield.log_stats
+    if args.shield_profile_enabled is not None:
+        shield_override_kwargs["profile_enabled"] = cfg.shield.profile_enabled
+    if args.shield_cache_enabled is not None:
+        shield_override_kwargs["cache_enabled"] = cfg.shield.cache_enabled
+    if args.shield_refine_enabled is not None:
+        shield_override_kwargs["refine_enabled"] = cfg.shield.refine_enabled
+    if args.shield_refine_margin is not None:
+        shield_override_kwargs["refine_margin"] = cfg.shield.refine_margin
+    if args.shield_penalty_coef is not None:
+        shield_override_kwargs["penalty_coef"] = cfg.shield.penalty_coef
+    if args.shield_near_miss_margin is not None:
+        shield_override_kwargs["near_miss_margin"] = cfg.shield.near_miss_margin
+    if args.shield_risk_score_enabled is not None:
+        shield_override_kwargs["risk_score_enabled"] = cfg.shield.risk_score_enabled
+    if args.shield_risk_variant is not None:
+        shield_override_kwargs["risk_variant"] = cfg.shield.risk_variant
+    if args.shield_risk_weight_clear is not None:
+        shield_override_kwargs["risk_weight_clear"] = cfg.shield.risk_weight_clear
+    if args.shield_risk_weight_region is not None:
+        shield_override_kwargs["risk_weight_region"] = cfg.shield.risk_weight_region
+    if args.shield_risk_weight_hist is not None:
+        shield_override_kwargs["risk_weight_hist"] = cfg.shield.risk_weight_hist
+    if args.shield_risk_clearance_norm is not None:
+        shield_override_kwargs["risk_clearance_norm"] = cfg.shield.risk_clearance_norm
+    if args.shield_risk_clear_gap_norm is not None:
+        shield_override_kwargs["risk_clear_gap_norm"] = cfg.shield.risk_clear_gap_norm
+    if args.shield_risk_support_clearance_margin is not None:
+        shield_override_kwargs["risk_support_clearance_margin"] = cfg.shield.risk_support_clearance_margin
+    if args.shield_risk_base_weight_prop_clear is not None:
+        shield_override_kwargs["risk_base_weight_prop_clear"] = cfg.shield.risk_base_weight_prop_clear
+    if args.shield_risk_base_weight_clear_gap is not None:
+        shield_override_kwargs["risk_base_weight_clear_gap"] = cfg.shield.risk_base_weight_clear_gap
+    if args.shield_risk_base_weight_support is not None:
+        shield_override_kwargs["risk_base_weight_support"] = cfg.shield.risk_base_weight_support
+    if args.shield_risk_base_weight_region is not None:
+        shield_override_kwargs["risk_base_weight_region"] = cfg.shield.risk_base_weight_region
+    if args.shield_risk_vnext2_weight_prop_clear is not None:
+        shield_override_kwargs["risk_vnext2_weight_prop_clear"] = cfg.shield.risk_vnext2_weight_prop_clear
+    if args.shield_risk_vnext2_weight_fragility is not None:
+        shield_override_kwargs["risk_vnext2_weight_fragility"] = cfg.shield.risk_vnext2_weight_fragility
+    if args.shield_risk_vnext2_weight_support is not None:
+        shield_override_kwargs["risk_vnext2_weight_support"] = cfg.shield.risk_vnext2_weight_support
+    if args.shield_risk_vnext2_weight_region is not None:
+        shield_override_kwargs["risk_vnext2_weight_region"] = cfg.shield.risk_vnext2_weight_region
+    if args.shield_risk_hist_window is not None:
+        shield_override_kwargs["risk_hist_window"] = cfg.shield.risk_hist_window
+    if args.shield_risk_threshold is not None:
+        shield_override_kwargs["risk_threshold"] = cfg.shield.risk_threshold
+    if args.shield_risk_threat_count_norm is not None:
+        shield_override_kwargs["risk_threat_count_norm"] = cfg.shield.risk_threat_count_norm
+    if args.shield_legacy_recursive_gate is not None:
+        shield_override_kwargs["legacy_recursive_gate"] = cfg.shield.legacy_recursive_gate
+    if args.shield_progressive_enabled is not None:
+        shield_override_kwargs["progressive_enabled"] = cfg.shield.progressive_enabled
+    if args.shield_lookahead_horizon is not None:
+        shield_override_kwargs["lookahead_horizon"] = cfg.shield.lookahead_horizon
+    if args.shield_risk_schedule_enabled is not None:
+        shield_override_kwargs["risk_schedule_enabled"] = cfg.shield.risk_schedule_enabled
 
     if args.animate_checkpoint and args.animate_baseline:
         raise ValueError("Please choose either --animate-checkpoint or --animate-baseline, not both.")
@@ -333,6 +493,7 @@ def main():
             episodes=args.eval_episodes,
             device=args.device,
             env_overrides=env_override_kwargs,
+            shield_overrides=shield_override_kwargs,
         )
         print(f"[validate] checkpoint={args.validate_checkpoint}")
         print(f"[validate] episodes={args.eval_episodes} metrics={format_metrics(eval_metrics)}")

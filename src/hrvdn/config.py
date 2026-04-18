@@ -2,6 +2,15 @@ from dataclasses import dataclass, field
 from typing import List, Literal
 
 
+RiskVariant = Literal["v1", "risk_base", "v_next", "v_next2"]
+
+
+def canonicalize_risk_variant(name: str) -> str:
+    if name == "v_next":
+        return "risk_base"
+    return name
+
+
 @dataclass
 class EnvConfig:
     map_size: int = 20
@@ -115,12 +124,31 @@ class ShieldConfig:
     recursive_recent_window: int = 5
     recursive_recent_trigger_threshold: int = 5
     risk_score_enabled: bool = True
+    # Runtime default: risk_base is the renamed deployable successor of legacy
+    # v_next. These are the main knobs to edit in config.py for new runs.
+    risk_variant: RiskVariant = "risk_base"
     risk_weight_clear: float = 0.5
     risk_weight_region: float = 0.3
     risk_weight_hist: float = 0.2
     risk_clearance_norm: float = 1.0
+    risk_clear_gap_norm: float = 1.0
+    risk_support_clearance_margin: float = 0.5
+    risk_base_weight_prop_clear: float = 0.40
+    risk_base_weight_clear_gap: float = 0.35
+    risk_base_weight_support: float = 0.00
+    risk_base_weight_region: float = 0.25
+    # Deprecated aliases kept only so old checkpoints/config dicts can still be
+    # loaded. New code should use the risk_base_* fields above.
+    risk_vnext_weight_prop_clear: float | None = None
+    risk_vnext_weight_clear_gap: float | None = None
+    risk_vnext_weight_support: float | None = None
+    risk_vnext_weight_region: float | None = None
+    risk_vnext2_weight_prop_clear: float = 0.45
+    risk_vnext2_weight_fragility: float = 0.25
+    risk_vnext2_weight_support: float = 0.20
+    risk_vnext2_weight_region: float = 0.10
     risk_hist_window: int = 5
-    risk_threshold: float = 0.5
+    risk_threshold: float = 0.35
     risk_threat_count_norm: float = 3.0
     legacy_recursive_gate: bool = False
 
@@ -128,6 +156,17 @@ class ShieldConfig:
     progressive_enabled: bool = False
     lookahead_horizon: int = 1
     risk_schedule_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        self.risk_variant = canonicalize_risk_variant(str(self.risk_variant))
+        if self.risk_vnext_weight_prop_clear is not None:
+            self.risk_base_weight_prop_clear = float(self.risk_vnext_weight_prop_clear)
+        if self.risk_vnext_weight_clear_gap is not None:
+            self.risk_base_weight_clear_gap = float(self.risk_vnext_weight_clear_gap)
+        if self.risk_vnext_weight_support is not None:
+            self.risk_base_weight_support = float(self.risk_vnext_weight_support)
+        if self.risk_vnext_weight_region is not None:
+            self.risk_base_weight_region = float(self.risk_vnext_weight_region)
 
 
 @dataclass

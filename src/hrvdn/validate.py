@@ -25,6 +25,7 @@ def evaluate_checkpoint(
     episodes: int = 10,
     device: str = "auto",
     env_overrides: Dict | None = None,
+    shield_overrides: Dict | None = None,
 ) -> Dict[str, float]:
     ckpt_path = Path(checkpoint_path)
     if not ckpt_path.exists():
@@ -37,6 +38,9 @@ def evaluate_checkpoint(
     cfg = config_from_dict(cfg_raw)
     cfg.reward.mode = ckpt.get("reward_mode", cfg.reward.mode)
     apply_env_overrides(cfg, **(env_overrides or {}))
+    for key, value in (shield_overrides or {}).items():
+        if hasattr(cfg.shield, key):
+            setattr(cfg.shield, key, value)
 
     env = UAVSearchEnv(cfg.env, cfg.reward, seed=cfg.train.seed)
     shield = CentralizedSafetyShield(cfg)
@@ -65,8 +69,11 @@ def format_metrics(metrics: Dict[str, float]) -> str:
         "action_replacement_rate",
         "avg_risk_score",
         "avg_risk_clear",
+        "avg_risk_clear_gap",
+        "avg_risk_fragility",
         "avg_risk_region",
         "avg_risk_hist",
+        "avg_risk_support",
         "high_risk_rate",
         "recursive_gate_rate",
         "near_miss_rate",
