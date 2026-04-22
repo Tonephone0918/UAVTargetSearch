@@ -3,10 +3,10 @@ from __future__ import annotations
 import math
 from collections import deque
 from time import perf_counter
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-import torch
+import  
 from torch.distributions import Categorical
 
 from .config import ExperimentConfig, canonicalize_risk_variant
@@ -30,7 +30,7 @@ class CentralizedSafetyShield:
 
     def __init__(self, cfg: ExperimentConfig):
         self.cfg = cfg
-        self.use_legacy_path_for_profile = False
+        self.use_legacy_path_for_profile = False 
         self.reset_episode()
 
     @property
@@ -49,11 +49,68 @@ class CentralizedSafetyShield:
     def risk_score_enabled(self) -> bool:
         return bool(self.cfg.shield.risk_score_enabled)
 
+    @property
+    def recursive_gate_mode(self) -> str:
+        if bool(getattr(self.cfg.shield, "legacy_recursive_gate", False)):
+            return "legacy"
+        mode = str(getattr(self.cfg.shield, "recursive_gate_mode", "risk"))
+        if mode not in {"full", "risk", "legacy"}:
+            return "risk"
+        if mode == "risk" and not bool(getattr(self.cfg.shield, "risk_score_enabled", True)):
+            return "legacy"
+        return mode
+
+    @property
+    def hard_solver_mode(self) -> str:
+        mode = str(getattr(self.cfg.shield, "hard_solver_mode", "sequential"))
+        if mode not in {"sequential", "exact", "sequential_with_exact_rescue"}:
+            return "sequential"
+        return mode
+
+    @property
+    def dead_end_policy(self) -> str:
+        policy = str(getattr(self.cfg.shield, "dead_end_policy", "fail_closed"))
+        if policy not in {"fail_closed", "emergency"}:
+            return "fail_closed"
+        return policy
+
+    @property
+    def adjudication_order_mode(self) -> str:
+        mode = str(getattr(self.cfg.shield, "adjudication_order", "most_constrained_first"))
+        if mode not in {"fixed", "most_constrained_first"}:
+            return "most_constrained_first"
+        return mode
+
+    @property
+    def hard_repair_enabled(self) -> bool:
+        return bool(getattr(self.cfg.shield, "hard_repair_enabled", True))
+
+    @property
+    def hard_repair_depth(self) -> int:
+        return max(0, int(getattr(self.cfg.shield, "hard_repair_depth", 2)))
+
+    @property
+    def future_witness_mode(self) -> str:
+        mode = str(getattr(self.cfg.shield, "future_witness_mode", "base_plus_clearance"))
+        if mode not in {"single", "base_plus_clearance"}:
+            return "base_plus_clearance"
+        return mode
+
+    @property
+    def future_beam_width(self) -> int:
+        return max(1, int(getattr(self.cfg.shield, "future_beam_width", 2)))
+
+    @property
+    def future_witness_top_k(self) -> int:
+        return max(1, int(getattr(self.cfg.shield, "future_witness_top_k", 2)))
+
     def reset_episode(self) -> None:
         self.shield_trigger_count = 0
         self.shield_agent_trigger_count = 0
         self.action_replaced_count = 0
         self.fallback_count = 0
+        self.emergency_count = 0
+        self.guarantee_broken_count = 0
         self.recent_trigger_history = deque(maxlen=max(1, int(self.cfg.shield.recursive_recent_window)))
         self.agent_intervention_history = [
             deque(maxlen=max(1, int(self.cfg.shield.risk_hist_window))) for _ in range(self.cfg.env.n_uavs)
@@ -61,10 +118,14 @@ class CentralizedSafetyShield:
         self.predict_cache: Dict[tuple, Dict[str, Any]] = {}
         self.hard_cache: Dict[tuple, tuple[List[int], Dict[str, Any]]] = {}
         self.future_safe_cache: Dict[tuple, bool] = {}
+        self.exact_context_cache: Dict[tuple, Dict[str, Any]] = {}
+        self.exact_exists_cache: Dict[tuple, tuple[bool, tuple[int, ...] | None]] = {}
+        self.exact_action_cache: Dict[tuple, tuple[int, ...]] = {}
         self.profile: Dict[str, float] = {
             "steps": 0.0,
             "shield_time": 0.0,
             "hard_time": 0.0,
+            "exact_hard_time": 0.0,
             "rule_mask_time": 0.0,
             "predict_time": 0.0,
             "recursive_time": 0.0,
@@ -81,11 +142,26 @@ class CentralizedSafetyShield:
             "recursive_gate_step_skips": 0.0,
             "recursive_candidate_checks": 0.0,
         }
+        self._reset_step_counters()
+
+    def _reset_step_counters(self) -> None:
+        self._step_hard_repair_attempts = 0
+        self._step_hard_repair_successes = 0
+        self._step_future_witness_branches = 0
+        self._step_future_beam_width_sum = 0.0
+        self._step_future_beam_calls = 0
+        self._step_exact_hard_queries = 0
+        self._step_exact_hard_feasible = 0
+        self._step_exact_hard_rescues = 0
+        self._step_exact_hard_false_empty = 0
+        self._step_exact_hard_empty_queries = 0
+        self._step_exact_hard_action_total = 0.0
 
     def profile_summary(self, total_step_time: float = 0.0, stats_time: float = 0.0) -> Dict[str, float]:
         steps = max(1.0, self.profile["steps"])
         shield_time = float(self.profile["shield_time"])
         hard_time = float(self.profile["hard_time"])
+        exact_hard_time = float(self.profile["exact_hard_time"])
         rule_mask_time = float(self.profile["rule_mask_time"])
         predict_time = float(self.profile["predict_time"])
         recursive_time = float(self.profile["recursive_time"])
@@ -97,8 +173,9 @@ class CentralizedSafetyShield:
             "perf_shield_time_ms": 1000.0 * shield_time / steps,
             "perf_hard_time_ms": 1000.0 * hard_time / steps,
             "perf_safe_time_ms": 1000.0 * hard_time / steps,
-            "perf_rule_mask_time_ms": 1000.0 * rule_mask_time / steps,
-            "perf_refine_time_ms": 1000.0 * refine_time / steps,
+            "perf_exact_hard_time_ms": 1000.0 * exact_hard_time / steps,
+             "perf_rule_mask_time_ms": 1000.0 * rule_mask_time / steps,
+            "perf_refine_time_ms": 1000.0 * refine_time / steps, 
             "perf_predict_time_ms": 1000.0 * predict_time / steps,
             "perf_recursive_time_ms": 1000.0 * recursive_time / steps,
             "perf_stats_time_ms": 1000.0 * stats_time / steps,
@@ -336,6 +413,128 @@ class CentralizedSafetyShield:
             next_positions[agent_idx] = self._single_next_position(state, agent_idx, int(action))
         return next_positions
 
+    def _compute_agent_constraint_features(
+        self,
+        state: Dict[str, Any],
+        agent_idx: int,
+        planned_next_positions: Optional[np.ndarray] = None,
+    ) -> Dict[str, float]:
+        valid_action_count = int(np.count_nonzero(self._valid_actions_for_state(state, agent_idx)))
+        x, y, z = state["uavs"][agent_idx]
+        boundary_margin = min(
+            x,
+            y,
+            self.cfg.env.map_size - 1 - x,
+            self.cfg.env.map_size - 1 - y,
+            z,
+            self.cfg.env.n_altitudes - 1 - z,
+        )
+        near_boundary = bool(boundary_margin <= 1)
+
+        curr_xy = np.asarray([x, y], dtype=np.float32)
+        local_threat_count = 0
+        threats = np.asarray(state["threats"], dtype=np.float32)
+        if threats.size > 0:
+            threat_local_radius = float(
+                self.cfg.env.threat_safe_dist + MAX_HORIZ_STEP + self.cfg.shield.local_threat_padding
+            )
+            local_threat_count = int(
+                np.sum(np.sum((threats - curr_xy) ** 2, axis=1) <= threat_local_radius ** 2)
+            )
+
+        local_uav_count = 0
+        if self.cfg.env.n_uavs > 1:
+            if planned_next_positions is None:
+                planned_next_positions = self._planned_next_positions(state, self._default_actions_for_state(state))
+            curr_positions = np.asarray([u[:2] for u in state["uavs"]], dtype=np.float32)
+            next_positions = np.asarray(planned_next_positions[:, :2], dtype=np.float32)
+            uav_local_radius = float(
+                self.cfg.env.uav_safe_dist + 2.0 * MAX_HORIZ_STEP + self.cfg.shield.local_uav_padding
+            )
+            other_indices = [i for i in range(self.cfg.env.n_uavs) if i != agent_idx]
+            if other_indices:
+                other_curr = curr_positions[other_indices]
+                other_next = next_positions[other_indices]
+                local_curr = np.sum((other_curr - curr_xy) ** 2, axis=1) <= uav_local_radius ** 2
+                local_next = np.sum((other_next - curr_xy) ** 2, axis=1) <= uav_local_radius ** 2
+                local_uav_count = int(np.count_nonzero(np.logical_or(local_curr, local_next)))
+
+        return {
+            "valid_action_count": float(valid_action_count),
+            "near_boundary": float(near_boundary),
+            "local_threat_count": float(local_threat_count),
+            "local_uav_count": float(local_uav_count),
+            "crowded": float(local_uav_count >= 2),
+        }
+
+    def _compute_adjudication_order(
+        self,
+        state: Dict[str, Any],
+        base_actions: Sequence[int],
+        planned_next_positions: Optional[np.ndarray] = None,
+    ) -> List[int]:
+        if self.adjudication_order_mode == "fixed":
+            return list(range(self.cfg.env.n_uavs))
+
+        next_positions = self._planned_next_positions(
+            state,
+            base_actions,
+            planned_next_positions=planned_next_positions,
+        )
+        scored_agents: List[tuple[tuple[float, ...], int]] = []
+        for agent_idx in range(self.cfg.env.n_uavs):
+            features = self._compute_agent_constraint_features(
+                state,
+                agent_idx,
+                planned_next_positions=next_positions,
+            )
+            sort_key = (
+                float(features["valid_action_count"]),
+                -float(features["near_boundary"]),
+                -float(features["local_threat_count"]),
+                -float(features["local_uav_count"]),
+                -float(features["crowded"]),
+                float(agent_idx),
+            )
+            scored_agents.append((sort_key, agent_idx))
+        scored_agents.sort(key=lambda item: item[0])
+        return [int(agent_idx) for _, agent_idx in scored_agents]
+
+    def _repair_candidate_actions(
+        self,
+        allowed_actions: Sequence[int],
+        selected_action: int,
+        actor_output: torch.Tensor | np.ndarray,
+        hard_meta: Dict[str, Any],
+    ) -> List[int]:
+        allowed = [int(a) for a in allowed_actions]
+        if len(allowed) <= 1:
+            return []
+
+        clearances = {
+            int(action): float(clearance)
+            for action, clearance in dict(hard_meta.get("clearances", {})).items()
+            if int(action) in allowed and np.isfinite(float(clearance))
+        }
+        scores = self._actor_scores(actor_output)
+        ordered: List[int] = []
+        seen = {int(selected_action)}
+
+        def add(action: int) -> None:
+            act = int(action)
+            if act in allowed and act not in seen:
+                ordered.append(act)
+                seen.add(act)
+
+        if clearances:
+            for action, _ in sorted(clearances.items(), key=lambda kv: float(kv[1]), reverse=True):
+                add(int(action))
+        for action in sorted(allowed, key=lambda a: float(scores[a]), reverse=True):
+            add(int(action))
+        for action in allowed:
+            add(int(action))
+        return ordered
+
     def _refine_hard_actions(
         self,
         env: UAVSearchEnv,
@@ -372,7 +571,7 @@ class CentralizedSafetyShield:
         self._maybe_record("refine_time", refine_start)
         return refined_hard_actions, refined_clearances
 
-    def _enumerate_hard_actions_with_meta(
+    def _enumerate_sequential_hard_actions_with_meta(
         self,
         env: UAVSearchEnv,
         state: Dict[str, Any],
@@ -386,12 +585,15 @@ class CentralizedSafetyShield:
             hard_actions = self._legacy_enumerate_hard_actions(env, state, agent_idx, base_actions)
             hard_meta = {
                 "clearances": {},
+                "valid_clearances": {},
                 "valid_action_count": int(len(hard_actions)),
                 "local_uav_count": 0,
                 "local_threat_count": 0,
                 "near_boundary": False,
                 "crowded": False,
                 "min_candidate_clearance": None,
+                "max_valid_clearance": None,
+                "best_valid_action": None,
                 "base_margins": self.check_hard_constraints(state),
             }
             self._maybe_record("hard_time", start)
@@ -430,12 +632,15 @@ class CentralizedSafetyShield:
         if len(action_ids) == 0:
             empty_meta = {
                 "clearances": {},
+                "valid_clearances": {},
                 "valid_action_count": 0,
                 "local_uav_count": 0,
                 "local_threat_count": 0,
                 "near_boundary": True,
                 "crowded": True,
                 "min_candidate_clearance": None,
+                "max_valid_clearance": None,
+                "best_valid_action": None,
                 "base_margins": self.check_hard_constraints(state),
             }
             if self.cache_enabled:
@@ -497,6 +702,10 @@ class CentralizedSafetyShield:
         hard_actions = action_ids[~forbidden].astype(np.int64).tolist()
         clearances = {}
         combined_clearance = np.minimum(uav_clearance, threat_clearance)
+        valid_clearances = {
+            int(action): float(clearance)
+            for action, clearance in zip(action_ids.tolist(), combined_clearance.tolist())
+        }
         if hard_actions:
             for action, clearance in zip(action_ids.tolist(), combined_clearance.tolist()):
                 if action in hard_actions:
@@ -522,6 +731,7 @@ class CentralizedSafetyShield:
         )
         hard_meta = {
             "clearances": clearances,
+            "valid_clearances": valid_clearances,
             "valid_action_count": int(len(action_ids)),
             "local_uav_count": int(local_uav_count),
             "local_threat_count": int(local_threat_count),
@@ -529,6 +739,10 @@ class CentralizedSafetyShield:
             "crowded": bool(local_uav_count >= 2),
             "min_candidate_clearance": float(min(clearances.values())) if clearances else float(self.cfg.env.map_size),
             "max_candidate_clearance": float(max(clearances.values())) if clearances else float(self.cfg.env.map_size),
+            "max_valid_clearance": float(max(valid_clearances.values())) if valid_clearances else None,
+            "best_valid_action": (
+                int(max(valid_clearances.items(), key=lambda kv: float(kv[1]))[0]) if valid_clearances else None
+            ),
             "base_margins": base_margins,
         }
 
@@ -537,6 +751,342 @@ class CentralizedSafetyShield:
         self._maybe_record("rule_mask_time", rule_start)
         self._maybe_record("hard_time", start)
         return hard_actions, hard_meta
+
+    def _exact_assignments_key(self, fixed_actions: Dict[int, int] | None) -> tuple[tuple[int, int], ...]:
+        if not fixed_actions:
+            return ()
+        return tuple(sorted((int(agent_idx), int(action)) for agent_idx, action in fixed_actions.items()))
+
+    def _build_exact_hard_context(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        state_key = self._state_key(state)
+        if self.cache_enabled:
+            cached = self.exact_context_cache.get(state_key)
+            if cached is not None:
+                return cached
+
+        n_agents = self.cfg.env.n_uavs
+        safe_dist_sq = float(self.cfg.env.uav_safe_dist ** 2)
+        threat_dist_sq = float(self.cfg.env.threat_safe_dist ** 2)
+        threats = np.asarray(state["threats"], dtype=np.float32)
+        curr_xy = tuple((int(uav[0]), int(uav[1])) for uav in state["uavs"])
+        domains: List[tuple[int, ...]] = []
+        next_positions: List[Dict[int, tuple[int, int, int]]] = []
+
+        for agent_idx in range(n_agents):
+            valid_mask = self._valid_actions_for_state(state, agent_idx).astype(bool)
+            action_ids = np.flatnonzero(valid_mask)
+            if len(action_ids) == 0:
+                domains.append(())
+                next_positions.append({})
+                continue
+
+            candidates = self._candidate_next_positions(state, agent_idx, action_ids)
+            candidates[:, 0] = np.clip(candidates[:, 0], 0, self.cfg.env.map_size - 1)
+            candidates[:, 1] = np.clip(candidates[:, 1], 0, self.cfg.env.map_size - 1)
+            candidates[:, 2] = np.clip(candidates[:, 2], 0, self.cfg.env.n_altitudes - 1)
+
+            threat_safe_mask = np.ones(len(action_ids), dtype=bool)
+            if threats.size > 0:
+                diff = candidates[:, None, :2].astype(np.float32) - threats[None, :, :]
+                d2 = np.sum(diff * diff, axis=-1)
+                threat_safe_mask = ~((d2 <= threat_dist_sq + 1e-6).any(axis=1))
+
+            kept_action_ids = action_ids[threat_safe_mask]
+            kept_candidates = candidates[threat_safe_mask]
+            domains.append(tuple(int(action) for action in kept_action_ids.tolist()))
+            next_positions.append(
+                {
+                    int(action): (int(pos[0]), int(pos[1]), int(pos[2]))
+                    for action, pos in zip(kept_action_ids.tolist(), kept_candidates.tolist())
+                }
+            )
+
+        compat: Dict[tuple[int, int], Dict[int, frozenset[int]]] = {}
+        for agent_i in range(n_agents):
+            for agent_j in range(agent_i + 1, n_agents):
+                compat_ij: Dict[int, frozenset[int]] = {}
+                compat_ji_lists: Dict[int, List[int]] = {}
+                curr_i = curr_xy[agent_i]
+                curr_j = curr_xy[agent_j]
+                for action_i in domains[agent_i]:
+                    next_i = next_positions[agent_i][int(action_i)]
+                    compatible_j: List[int] = []
+                    for action_j in domains[agent_j]:
+                        next_j = next_positions[agent_j][int(action_j)]
+                        dist_ok = (
+                            (float(next_i[0]) - float(next_j[0])) ** 2
+                            + (float(next_i[1]) - float(next_j[1])) ** 2
+                            > safe_dist_sq + 1e-6
+                        )
+                        swap_ok = not (
+                            (int(next_i[0]), int(next_i[1])) == curr_j
+                            and (int(next_j[0]), int(next_j[1])) == curr_i
+                        )
+                        if dist_ok and swap_ok:
+                            compatible_j.append(int(action_j))
+                            compat_ji_lists.setdefault(int(action_j), []).append(int(action_i))
+                    compat_ij[int(action_i)] = frozenset(compatible_j)
+                compat[(agent_i, agent_j)] = compat_ij
+                compat[(agent_j, agent_i)] = {
+                    int(action_j): frozenset(compat_ji_lists.get(int(action_j), []))
+                    for action_j in domains[agent_j]
+                }
+
+        context = {
+            "state_key": state_key,
+            "domains": tuple(domains),
+            "next_positions": tuple(next_positions),
+            "curr_xy": curr_xy,
+            "compat": compat,
+            "memo": {},
+        }
+        if self.cache_enabled:
+            self.exact_context_cache[state_key] = context
+        return context
+
+    def _exact_actions_compatible(
+        self,
+        context: Dict[str, Any],
+        agent_i: int,
+        action_i: int,
+        agent_j: int,
+        action_j: int,
+    ) -> bool:
+        if int(agent_i) == int(agent_j):
+            return int(action_i) == int(action_j)
+        compat_map = context["compat"].get((int(agent_i), int(agent_j)), {})
+        return int(action_j) in compat_map.get(int(action_i), frozenset())
+
+    def _exact_search_assignments(
+        self,
+        context: Dict[str, Any],
+        assignments: Dict[int, int],
+    ) -> tuple[bool, tuple[int, ...] | None]:
+        key = self._exact_assignments_key(assignments)
+        memo = context["memo"]
+        cached = memo.get(key)
+        if cached is not None:
+            return bool(cached[0]), cached[1]
+
+        domains: tuple[tuple[int, ...], ...] = context["domains"]
+        n_agents = self.cfg.env.n_uavs
+
+        for agent_idx, action in assignments.items():
+            if int(action) not in domains[int(agent_idx)]:
+                memo[key] = (False, None)
+                return False, None
+
+        assigned_items = sorted((int(agent_idx), int(action)) for agent_idx, action in assignments.items())
+        for idx, (agent_i, action_i) in enumerate(assigned_items):
+            for agent_j, action_j in assigned_items[idx + 1 :]:
+                if not self._exact_actions_compatible(context, agent_i, action_i, agent_j, action_j):
+                    memo[key] = (False, None)
+                    return False, None
+
+        if len(assignments) == n_agents:
+            witness = tuple(int(assignments[agent_idx]) for agent_idx in range(n_agents))
+            memo[key] = (True, witness)
+            return True, witness
+
+        candidate_domains: Dict[int, List[int]] = {}
+        for agent_idx in range(n_agents):
+            if agent_idx in assignments:
+                continue
+            feasible_actions = [
+                int(action)
+                for action in domains[agent_idx]
+                if all(
+                    self._exact_actions_compatible(context, agent_idx, int(action), other_idx, other_action)
+                    for other_idx, other_action in assignments.items()
+                )
+            ]
+            if not feasible_actions:
+                memo[key] = (False, None)
+                return False, None
+            candidate_domains[agent_idx] = feasible_actions
+
+        next_agent_idx = min(
+            candidate_domains,
+            key=lambda idx: (len(candidate_domains[idx]), int(idx)),
+        )
+        remaining_agents = [int(idx) for idx in candidate_domains.keys() if int(idx) != int(next_agent_idx)]
+        ordered_actions = sorted(
+            candidate_domains[next_agent_idx],
+            key=lambda action: (
+                -sum(
+                    sum(
+                        1
+                        for other_action in candidate_domains[other_idx]
+                        if self._exact_actions_compatible(
+                            context,
+                            next_agent_idx,
+                            int(action),
+                            other_idx,
+                            int(other_action),
+                        )
+                    )
+                    for other_idx in remaining_agents
+                ),
+                int(action),
+            ),
+        )
+
+        for action in ordered_actions:
+            next_assignments = dict(assignments)
+            next_assignments[int(next_agent_idx)] = int(action)
+            feasible, witness = self._exact_search_assignments(context, next_assignments)
+            if feasible:
+                memo[key] = (True, witness)
+                return True, witness
+
+        memo[key] = (False, None)
+        return False, None
+
+    def exists_joint_hard_completion(
+        self,
+        state: Dict[str, Any],
+        fixed_actions: Dict[int, int] | None = None,
+        *,
+        forced_agent_idx: int | None = None,
+        forced_action: int | None = None,
+    ) -> tuple[bool, List[int] | None]:
+        assignments = {
+            int(agent_idx): int(action)
+            for agent_idx, action in (fixed_actions or {}).items()
+        }
+        if forced_agent_idx is not None and forced_action is not None:
+            assignments[int(forced_agent_idx)] = int(forced_action)
+
+        state_key = self._state_key(state)
+        assignments_key = self._exact_assignments_key(assignments)
+        cache_key = (state_key, assignments_key)
+        if self.cache_enabled:
+            cached = self.exact_exists_cache.get(cache_key)
+            if cached is not None:
+                feasible, witness = cached
+                return bool(feasible), list(witness) if feasible and witness is not None else None
+
+        context = self._build_exact_hard_context(state)
+        feasible, witness = self._exact_search_assignments(context, assignments)
+        if self.cache_enabled:
+            self.exact_exists_cache[cache_key] = (bool(feasible), witness)
+        return bool(feasible), list(witness) if feasible and witness is not None else None
+
+    def _exact_meta_from_template(
+        self,
+        exact_actions: Sequence[int],
+        template_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        meta = dict(template_meta)
+        valid_clearances = {
+            int(action): float(clearance)
+            for action, clearance in dict(template_meta.get("valid_clearances", {})).items()
+            if np.isfinite(float(clearance))
+        }
+        fallback_clearances = {
+            int(action): float(clearance)
+            for action, clearance in dict(template_meta.get("clearances", {})).items()
+            if np.isfinite(float(clearance))
+        }
+        clearances: Dict[int, float] = {}
+        for action in exact_actions:
+            act = int(action)
+            if act in valid_clearances:
+                clearances[act] = float(valid_clearances[act])
+            elif act in fallback_clearances:
+                clearances[act] = float(fallback_clearances[act])
+            else:
+                clearances[act] = float(self.cfg.env.map_size)
+        meta["clearances"] = clearances
+        meta["min_candidate_clearance"] = float(min(clearances.values())) if clearances else float(self.cfg.env.map_size)
+        meta["max_candidate_clearance"] = float(max(clearances.values())) if clearances else float(self.cfg.env.map_size)
+        return meta
+
+    def enumerate_exact_hard_actions(
+        self,
+        env: UAVSearchEnv,
+        state: Dict[str, Any],
+        agent_idx: int,
+        base_actions: Sequence[int],
+        *,
+        fixed_actions: Dict[int, int] | None = None,
+    ) -> List[int]:
+        del env, base_actions
+        exact_start = self._maybe_start()
+        assignments = {
+            int(idx): int(action)
+            for idx, action in (fixed_actions or {}).items()
+            if int(idx) != int(agent_idx)
+        }
+        state_key = self._state_key(state)
+        assignments_key = self._exact_assignments_key(assignments)
+        cache_key = (state_key, int(agent_idx), assignments_key)
+        if self.cache_enabled:
+            cached = self.exact_action_cache.get(cache_key)
+            if cached is not None:
+                self._maybe_record("exact_hard_time", exact_start)
+                self._maybe_record("hard_time", exact_start)
+                return [int(action) for action in cached]
+
+        context = self._build_exact_hard_context(state)
+        domains: tuple[tuple[int, ...], ...] = context["domains"]
+        exact_actions: List[int] = []
+        for action in domains[int(agent_idx)]:
+            feasible, _ = self.exists_joint_hard_completion(
+                state,
+                assignments,
+                forced_agent_idx=int(agent_idx),
+                forced_action=int(action),
+            )
+            if feasible:
+                exact_actions.append(int(action))
+
+        if self.cache_enabled:
+            self.exact_action_cache[cache_key] = tuple(int(action) for action in exact_actions)
+        self._maybe_record("exact_hard_time", exact_start)
+        self._maybe_record("hard_time", exact_start)
+        return exact_actions
+
+    def _enumerate_hard_actions_with_meta(
+        self,
+        env: UAVSearchEnv,
+        state: Dict[str, Any],
+        agent_idx: int,
+        base_actions: Sequence[int],
+        planned_next_positions: Optional[np.ndarray] = None,
+        allow_refine: bool = True,
+        fixed_actions: Dict[int, int] | None = None,
+    ) -> tuple[List[int], Dict[str, Any]]:
+        solver_mode = self.hard_solver_mode
+        sequential_actions, sequential_meta = self._enumerate_sequential_hard_actions_with_meta(
+            env,
+            state,
+            agent_idx,
+            base_actions,
+            planned_next_positions=planned_next_positions,
+            allow_refine=allow_refine,
+        )
+        if solver_mode != "exact":
+            return sequential_actions, sequential_meta
+
+        exact_actions = self.enumerate_exact_hard_actions(
+            env,
+            state,
+            agent_idx,
+            base_actions,
+            fixed_actions=fixed_actions,
+        )
+        self._step_exact_hard_queries += 1
+        self._step_exact_hard_action_total += float(len(exact_actions))
+        if exact_actions:
+            self._step_exact_hard_feasible += 1
+        if not sequential_actions:
+            self._step_exact_hard_empty_queries += 1
+            if exact_actions:
+                self._step_exact_hard_false_empty += 1
+
+        exact_meta = self._exact_meta_from_template(exact_actions, sequential_meta)
+        return exact_actions, exact_meta
 
     def enumerate_hard_actions(
         self,
@@ -574,7 +1124,33 @@ class CentralizedSafetyShield:
         )
 
     def _uses_legacy_recursive_gate(self) -> bool:
-        return bool(self.cfg.shield.legacy_recursive_gate or not self.risk_score_enabled)
+        return bool(self.recursive_gate_mode == "legacy")
+
+    def _allowed_mask_from_actions(
+        self,
+        allowed_actions: Sequence[int],
+        valid_mask: Sequence[bool] | np.ndarray,
+    ) -> np.ndarray:
+        allowed_mask = np.zeros(len(valid_mask), dtype=bool)
+        if allowed_actions:
+            allowed_mask[np.asarray([int(a) for a in allowed_actions], dtype=np.int64)] = True
+        allowed_mask &= np.asarray(valid_mask, dtype=bool)
+        return allowed_mask
+
+    def _one_hot_action_mask(
+        self,
+        action: int,
+        valid_mask: Sequence[bool] | np.ndarray,
+    ) -> np.ndarray:
+        one_hot = np.zeros(len(valid_mask), dtype=bool)
+        valid = np.asarray(valid_mask, dtype=bool)
+        act = int(action)
+        if 0 <= act < len(one_hot) and valid[act]:
+            one_hot[act] = True
+            return one_hot
+        if valid.any():
+            one_hot[int(np.flatnonzero(valid)[0])] = True
+        return one_hot
 
     def _zero_agent_risk(self) -> Dict[str, float]:
         return {
@@ -755,6 +1331,134 @@ class CentralizedSafetyShield:
             "high_risk": bool(score >= float(self.cfg.shield.risk_threshold)),
         }
 
+    def _future_witness_candidates(
+        self,
+        base_action: int,
+        hard_actions: Sequence[int],
+        hard_meta: Dict[str, Any],
+    ) -> List[int]:
+        if not hard_actions:
+            return []
+
+        hard_list = [int(a) for a in hard_actions]
+        clearances = {
+            int(action): float(clearance)
+            for action, clearance in dict(hard_meta.get("clearances", {})).items()
+            if int(action) in hard_list and np.isfinite(float(clearance))
+        }
+        ordered: List[int] = []
+        seen: set[int] = set()
+
+        def add(action: int) -> None:
+            act = int(action)
+            if act in hard_list and act not in seen:
+                ordered.append(act)
+                seen.add(act)
+
+        if self.future_witness_mode == "single":
+            if int(base_action) in hard_list:
+                return [int(base_action)]
+            if clearances:
+                best = max(clearances.items(), key=lambda kv: float(kv[1]))[0]
+                return [int(best)]
+            return [int(hard_list[0])]
+
+        add(int(base_action))
+        if clearances:
+            for action, _ in sorted(clearances.items(), key=lambda kv: float(kv[1]), reverse=True)[: self.future_witness_top_k]:
+                add(int(action))
+        for action in hard_list:
+            add(int(action))
+            if len(ordered) >= max(self.future_witness_top_k + 1, self.future_beam_width):
+                break
+        return ordered
+
+    def _future_branch_score(
+        self,
+        action: int,
+        hard_actions: Sequence[int],
+        hard_meta: Dict[str, Any],
+    ) -> float:
+        clearances = dict(hard_meta.get("clearances", {}))
+        action_clearance = clearances.get(int(action), hard_meta.get("max_candidate_clearance", 0.0))
+        if action_clearance is None or not np.isfinite(float(action_clearance)):
+            action_clearance = 0.0
+        support_bonus = float(len(hard_actions))
+        return float(action_clearance) + 0.05 * support_bonus
+
+    def _attempt_hard_repair(
+        self,
+        env: UAVSearchEnv,
+        state: Dict[str, Any],
+        current_agent_idx: int,
+        final_actions: List[int],
+        effective_masks: np.ndarray,
+        valid_masks: np.ndarray,
+        actor_preferences: torch.Tensor | np.ndarray,
+        proposed_actions: Sequence[int],
+        planned_next_positions: np.ndarray,
+        processed_order: Sequence[int],
+        agent_candidate_actions: Sequence[Sequence[int]],
+        agent_hard_meta: Sequence[Optional[Dict[str, Any]]],
+        agent_triggered_flags: List[bool],
+        agent_replaced_flags: List[bool],
+    ) -> tuple[List[int], Dict[str, Any], bool]:
+        if not self.hard_repair_enabled or self.hard_repair_depth <= 0 or not processed_order:
+            return [], {}, False
+
+        recent_agents = list(reversed(processed_order[-self.hard_repair_depth :]))
+        for prior_agent_idx in recent_agents:
+            stored_candidates = [int(a) for a in agent_candidate_actions[prior_agent_idx]]
+            if len(stored_candidates) <= 1:
+                continue
+            prior_meta = agent_hard_meta[prior_agent_idx] or {}
+            current_prior_hard, current_prior_meta = self._enumerate_sequential_hard_actions_with_meta(
+                env,
+                state,
+                prior_agent_idx,
+                final_actions,
+                planned_next_positions=planned_next_positions,
+            )
+            allowed_pool = [int(a) for a in stored_candidates if int(a) in {int(v) for v in current_prior_hard}]
+            if len(allowed_pool) <= 1:
+                continue
+            repair_meta = dict(current_prior_meta)
+            if not repair_meta.get("clearances"):
+                repair_meta["clearances"] = dict(prior_meta.get("clearances", {}))
+            alternatives = self._repair_candidate_actions(
+                allowed_pool,
+                final_actions[prior_agent_idx],
+                actor_preferences[prior_agent_idx],
+                repair_meta,
+            )
+            for alternative in alternatives:
+                self._step_hard_repair_attempts += 1
+                candidate_actions = list(final_actions)
+                candidate_actions[prior_agent_idx] = int(alternative)
+                candidate_positions = np.array(planned_next_positions, copy=True)
+                candidate_positions[prior_agent_idx] = self._single_next_position(state, prior_agent_idx, int(alternative))
+                repaired_hard_actions, repaired_hard_meta = self._enumerate_sequential_hard_actions_with_meta(
+                    env,
+                    state,
+                    current_agent_idx,
+                    candidate_actions,
+                    planned_next_positions=candidate_positions,
+                )
+                if not repaired_hard_actions:
+                    continue
+                final_actions[prior_agent_idx] = int(alternative)
+                planned_next_positions[prior_agent_idx] = candidate_positions[prior_agent_idx]
+                effective_masks[prior_agent_idx] = self._allowed_mask_from_actions(
+                    stored_candidates,
+                    valid_masks[prior_agent_idx],
+                )
+                agent_triggered_flags[prior_agent_idx] = True
+                if int(alternative) != int(proposed_actions[prior_agent_idx]):
+                    agent_replaced_flags[prior_agent_idx] = True
+                self._step_hard_repair_successes += 1
+                return repaired_hard_actions, repaired_hard_meta, True
+        return [], {}, False
+
     def _future_safe_exists(self, env: UAVSearchEnv, state: Dict[str, Any]) -> bool:
         start = self._maybe_start()
         state_key = self._state_key(state)
@@ -766,20 +1470,59 @@ class CentralizedSafetyShield:
                 self._maybe_record("recursive_time", start)
                 return bool(cached)
 
-        candidate_actions = self._default_actions_for_state(state)
+        initial_actions = self._default_actions_for_state(state)
+        initial_positions = self._planned_next_positions(state, initial_actions)
+        future_order = self._compute_adjudication_order(
+            state,
+            initial_actions,
+            planned_next_positions=initial_positions,
+        )
+        beam: List[tuple[List[int], float, int]] = [(list(initial_actions), 0.0, 0)]
+        max_beam_width_used = 0
         future_safe = True
-        for agent_idx in range(self.cfg.env.n_uavs):
-            hard_actions = self.enumerate_hard_actions(
-                env,
-                state,
-                agent_idx,
-                candidate_actions,
-                allow_refine=False,
-            )
-            if not hard_actions:
+        for _ in range(self.cfg.env.n_uavs):
+            if not beam:
                 future_safe = False
                 break
-            candidate_actions[agent_idx] = int(hard_actions[0])
+            max_beam_width_used = max(max_beam_width_used, len(beam))
+            expanded: List[tuple[List[int], float, int]] = []
+            for beam_actions, beam_score, depth in beam:
+                if depth >= len(future_order):
+                    expanded.append((list(beam_actions), float(beam_score), depth))
+                    continue
+                beam_positions = self._planned_next_positions(state, beam_actions)
+                agent_idx = int(future_order[depth])
+                hard_actions, hard_meta = self._enumerate_sequential_hard_actions_with_meta(
+                    env,
+                    state,
+                    agent_idx,
+                    beam_actions,
+                    planned_next_positions=beam_positions,
+                    allow_refine=False,
+                )
+                if not hard_actions:
+                    continue
+                witness_candidates = self._future_witness_candidates(
+                    beam_actions[agent_idx],
+                    hard_actions,
+                    hard_meta,
+                )
+                self._step_future_witness_branches += len(witness_candidates)
+                for action in witness_candidates:
+                    next_actions = list(beam_actions)
+                    next_actions[agent_idx] = int(action)
+                    next_score = float(beam_score) + self._future_branch_score(action, hard_actions, hard_meta)
+                    expanded.append((next_actions, next_score, depth + 1))
+            if not expanded:
+                future_safe = False
+                break
+            expanded.sort(key=lambda item: float(item[1]), reverse=True)
+            beam = expanded[: self.future_beam_width]
+        if beam:
+            max_beam_width_used = max(max_beam_width_used, len(beam))
+
+        self._step_future_beam_calls += 1
+        self._step_future_beam_width_sum += float(max_beam_width_used)
 
         if self.cache_enabled:
             self.future_safe_cache[state_key] = bool(future_safe)
@@ -862,7 +1605,10 @@ class CentralizedSafetyShield:
     ) -> bool:
         if self.cfg.shield.mode != "recursive":
             return False
-        if self._uses_legacy_recursive_gate():
+        gate_mode = self.recursive_gate_mode
+        if gate_mode == "full":
+            return True
+        if gate_mode == "legacy":
             return self._should_run_recursive_check_legacy(
                 state,
                 agent_idx,
@@ -870,6 +1616,8 @@ class CentralizedSafetyShield:
                 hard_actions,
                 hard_meta,
             )
+        if not self.risk_score_enabled:
+            return False
         return bool(risk_info.get("high_risk", False))
 
     def _actor_scores(self, actor_output: torch.Tensor | np.ndarray) -> np.ndarray:
@@ -905,6 +1653,68 @@ class CentralizedSafetyShield:
             add(int(best_clearance))
         return ordered
 
+    def _select_emergency_action(
+        self,
+        actor_output: torch.Tensor | np.ndarray,
+        proposed_action: int,
+        valid_mask: Sequence[bool] | np.ndarray,
+        hard_meta: Dict[str, Any],
+    ) -> int:
+        valid = np.asarray(valid_mask, dtype=bool)
+        valid_actions = [int(a) for a in np.flatnonzero(valid)]
+        if not valid_actions:
+            return int(proposed_action)
+
+        valid_clearances = {
+            int(action): float(clearance)
+            for action, clearance in dict(hard_meta.get("valid_clearances", {})).items()
+            if int(action) in valid_actions and np.isfinite(float(clearance))
+        }
+        scores = self._actor_scores(actor_output)
+
+        if valid_clearances:
+            return int(
+                max(
+                    valid_actions,
+                    key=lambda action: (
+                        float(valid_clearances.get(int(action), float("-inf"))),
+                        float(scores[int(action)]),
+                    ),
+                )
+            )
+
+        if 0 <= int(proposed_action) < len(valid) and valid[int(proposed_action)]:
+            return int(proposed_action)
+
+        return int(max(valid_actions, key=lambda action: float(scores[int(action)])))
+
+    def _resolve_empty_allowed_set(
+        self,
+        actor_output: torch.Tensor | np.ndarray,
+        proposed_action: int,
+        valid_mask: Sequence[bool] | np.ndarray,
+        hard_meta: Dict[str, Any],
+    ) -> tuple[int, np.ndarray, Dict[str, Any]]:
+        # Explicit dead-end semantics. When A_hard is empty there is no hard-safe
+        # action to resample from, so we must not silently pretend shielding
+        # succeeded. We either fail_closed (keep the actor proposal) or run an
+        # explicitly marked emergency least-bad action rule.
+        decision = {
+            "used_emergency": False,
+            "guarantee_broken": True,
+        }
+        valid = np.asarray(valid_mask, dtype=bool)
+        if self.dead_end_policy == "emergency":
+            selected_action = self._select_emergency_action(actor_output, proposed_action, valid, hard_meta)
+            selected_mask = self._one_hot_action_mask(selected_action, valid)
+            decision["used_emergency"] = True
+            return int(selected_action), selected_mask, decision
+
+        selected_action = int(proposed_action)
+        if not (0 <= selected_action < len(valid) and valid[selected_action]) and valid.any():
+            selected_action = int(np.flatnonzero(valid)[0])
+        return selected_action, valid.copy(), decision
+
     def _decision_recursive_actions(
         self,
         env: UAVSearchEnv,
@@ -921,6 +1731,7 @@ class CentralizedSafetyShield:
             "recursive_gate_run": False,
             "high_risk": bool(risk_info.get("high_risk", False)),
             "used_legacy_recursive_gate": bool(self._uses_legacy_recursive_gate()),
+            "recursive_gate_mode": str(self.recursive_gate_mode),
         }
         if not hard_actions:
             return [], decision_meta
@@ -947,7 +1758,7 @@ class CentralizedSafetyShield:
             risk_info,
         ):
             self.profile["recursive_gate_skips"] += 1.0
-            return list(hard_actions), decision_meta
+            return [], decision_meta
 
         decision_meta["recursive_gate_run"] = True
         self.profile["recursive_gate_runs"] += 1.0
@@ -1053,6 +1864,7 @@ class CentralizedSafetyShield:
         selection_mode: str,
     ) -> tuple[List[int], np.ndarray, Dict[str, Any]]:
         total_start = self._maybe_start()
+        self._reset_step_counters()
         proposed = [int(a) for a in proposed_actions]
         valid_masks = np.asarray(action_masks, dtype=bool)
         state = self._capture_state(env)
@@ -1087,9 +1899,14 @@ class CentralizedSafetyShield:
                 "min_hard_action_count_step": 0.0,
                 "min_safe_action_count_step": 0.0,
                 "min_rec_action_count_step": 0.0,
+                "dead_end": False,
                 "dead_end_hard": False,
                 "dead_end_safe": False,
                 "dead_end_rec": False,
+                "emergency_triggered": False,
+                "emergency_agents": 0,
+                "guarantee_broken": False,
+                "guarantee_broken_agents": 0,
                 "shield_fallback_triggered": False,
                 "shield_fallback_count": int(self.fallback_count),
                 "min_uav_uav_margin": float(margins["min_uav_uav_margin"]),
@@ -1110,6 +1927,16 @@ class CentralizedSafetyShield:
                 "recursive_gate_agents": 0,
                 "recursive_gate_rate_step": 0.0,
                 "risk_agent_count": int(self.cfg.env.n_uavs),
+                "hard_repair_attempt_count_step": 0,
+                "hard_repair_success_count_step": 0,
+                "future_witness_branch_count_step": 0.0,
+                "future_beam_width_used_step": 0.0,
+                "exact_hard_query_count_step": 0,
+                "exact_hard_feasible_count_step": 0,
+                "exact_hard_rescue_count_step": 0,
+                "exact_hard_false_empty_count_step": 0,
+                "exact_hard_empty_query_count_step": 0,
+                "exact_hard_action_count_step": 0.0,
             }
             self._maybe_record("shield_time", total_start)
             return proposed, valid_masks.copy(), step_stats
@@ -1117,49 +1944,100 @@ class CentralizedSafetyShield:
         final_actions = list(proposed)
         effective_masks = valid_masks.copy()
         planned_next_positions = self._planned_next_positions(state, final_actions)
-        hard_sizes: List[int] = []
-        rec_sizes: List[int] = []
-        shield_triggered = False
-        action_replaced = False
-        replaced_agents = 0
-        triggered_agents = 0
-        fallback_triggered = False
-        recursive_gate_ran = False
-        risk_scores: List[float] = []
-        risk_clear_scores: List[float] = []
-        risk_clear_gap_scores: List[float] = []
-        risk_fragility_scores: List[float] = []
-        risk_region_scores: List[float] = []
-        risk_hist_scores: List[float] = []
-        risk_support_scores: List[float] = []
+        n_agents = self.cfg.env.n_uavs
+        hard_sizes = [0 for _ in range(n_agents)]
+        rec_sizes = [0 for _ in range(n_agents)]
+        dead_end_rec_flags = [False for _ in range(n_agents)]
+        risk_scores = [0.0 for _ in range(n_agents)]
+        risk_clear_scores = [0.0 for _ in range(n_agents)]
+        risk_clear_gap_scores = [0.0 for _ in range(n_agents)]
+        risk_fragility_scores = [0.0 for _ in range(n_agents)]
+        risk_region_scores = [0.0 for _ in range(n_agents)]
+        risk_hist_scores = [0.0 for _ in range(n_agents)]
+        risk_support_scores = [0.0 for _ in range(n_agents)]
+        agent_candidate_actions: List[List[int]] = [[] for _ in range(n_agents)]
+        agent_hard_meta: List[Optional[Dict[str, Any]]] = [None for _ in range(n_agents)]
+        agent_triggered_flags = [False for _ in range(n_agents)]
+        agent_replaced_flags = [False for _ in range(n_agents)]
+        agent_emergency_flags = [False for _ in range(n_agents)]
+        agent_guarantee_broken_flags = [False for _ in range(n_agents)]
+        processed_order: List[int] = []
         high_risk_agents = 0
         recursive_gate_agents = 0
 
         # Shield hierarchy: A_hard -> risk gate -> A_rec.
         # "safe" mode is intentionally kept as the experiment name for the
         # hard-safe-only mode, i.e. it computes A_hard and never upgrades.
-        for agent_idx in range(self.cfg.env.n_uavs):
+        adjudication_order = self._compute_adjudication_order(
+            state,
+            final_actions,
+            planned_next_positions=planned_next_positions,
+        )
+        for agent_idx in adjudication_order:
             base_actions = list(final_actions)
-            gate_runs_before = self.profile["recursive_gate_runs"]
+            fixed_actions = {int(idx): int(final_actions[idx]) for idx in processed_order}
             hard_actions, hard_meta = self._enumerate_hard_actions_with_meta(
                 env,
                 state,
                 agent_idx,
                 base_actions,
                 planned_next_positions=planned_next_positions,
+                fixed_actions=fixed_actions,
             )
-            hard_sizes.append(len(hard_actions))
+            if not hard_actions and self.hard_solver_mode != "exact":
+                repaired_hard_actions, repaired_hard_meta, _ = self._attempt_hard_repair(
+                    env,
+                    state,
+                    agent_idx,
+                    final_actions,
+                    effective_masks,
+                    valid_masks,
+                    actor_preferences,
+                    proposed,
+                    planned_next_positions,
+                    processed_order,
+                    agent_candidate_actions,
+                    agent_hard_meta,
+                    agent_triggered_flags,
+                    agent_replaced_flags,
+                )
+                if repaired_hard_actions:
+                    hard_actions = repaired_hard_actions
+                    hard_meta = repaired_hard_meta
+                    base_actions = list(final_actions)
+                    fixed_actions = {int(idx): int(final_actions[idx]) for idx in processed_order}
+            if not hard_actions and self.hard_solver_mode == "sequential_with_exact_rescue":
+                exact_actions = self.enumerate_exact_hard_actions(
+                    env,
+                    state,
+                    agent_idx,
+                    base_actions,
+                    fixed_actions=fixed_actions,
+                )
+                self._step_exact_hard_queries += 1
+                self._step_exact_hard_action_total += float(len(exact_actions))
+                self._step_exact_hard_empty_queries += 1
+                if exact_actions:
+                    self._step_exact_hard_feasible += 1
+                    self._step_exact_hard_false_empty += 1
+                    self._step_exact_hard_rescues += 1
+                    hard_actions = exact_actions
+                    hard_meta = self._exact_meta_from_template(exact_actions, hard_meta)
+            hard_sizes[agent_idx] = len(hard_actions)
+            agent_hard_meta[agent_idx] = dict(hard_meta)
+
             risk_info = self.compute_agent_risk(agent_idx, hard_actions, hard_meta, proposed_action=final_actions[agent_idx])
-            risk_scores.append(float(risk_info["score"]))
-            risk_clear_scores.append(float(risk_info["clear"]))
-            risk_clear_gap_scores.append(float(risk_info.get("clear_gap", 0.0)))
-            risk_fragility_scores.append(float(risk_info.get("fragility", 0.0)))
-            risk_region_scores.append(float(risk_info["region"]))
-            risk_hist_scores.append(float(risk_info["hist"]))
-            risk_support_scores.append(float(risk_info.get("support", 0.0)))
+            risk_scores[agent_idx] = float(risk_info["score"])
+            risk_clear_scores[agent_idx] = float(risk_info["clear"])
+            risk_clear_gap_scores[agent_idx] = float(risk_info.get("clear_gap", 0.0))
+            risk_fragility_scores[agent_idx] = float(risk_info.get("fragility", 0.0))
+            risk_region_scores[agent_idx] = float(risk_info["region"])
+            risk_hist_scores[agent_idx] = float(risk_info["hist"])
+            risk_support_scores[agent_idx] = float(risk_info.get("support", 0.0))
             high_risk_agents += int(bool(risk_info.get("high_risk", False)))
 
             rec_actions: List[int] = []
+            rec_gate_run = False
             if self.cfg.shield.mode == "recursive":
                 rec_actions, decision_meta = self._decision_recursive_actions(
                     env,
@@ -1172,33 +2050,36 @@ class CentralizedSafetyShield:
                     hard_meta,
                     risk_info,
                 )
-                recursive_gate_agents += int(bool(decision_meta.get("recursive_gate_run", False)))
+                rec_gate_run = bool(decision_meta.get("recursive_gate_run", False))
+                recursive_gate_agents += int(rec_gate_run)
             else:
                 decision_meta = {
                     "recursive_gate_run": False,
                     "high_risk": bool(risk_info.get("high_risk", False)),
                     "used_legacy_recursive_gate": bool(self._uses_legacy_recursive_gate()),
                 }
-            recursive_gate_ran = recursive_gate_ran or (self.profile["recursive_gate_runs"] > gate_runs_before)
             if self.cfg.shield.mode == "recursive":
-                rec_sizes.append(len(rec_actions))
+                rec_sizes[agent_idx] = len(rec_actions) if rec_gate_run else 0
+                dead_end_rec_flags[agent_idx] = bool(rec_gate_run and len(rec_actions) == 0)
 
-            candidate_actions = hard_actions
-            if self.cfg.shield.mode == "recursive":
-                candidate_actions = rec_actions if rec_actions else hard_actions
+            candidate_actions = list(hard_actions)
+            if self.cfg.shield.mode == "recursive" and rec_gate_run and rec_actions:
+                candidate_actions = list(rec_actions)
+            agent_candidate_actions[agent_idx] = list(candidate_actions)
+
+            effective_masks[agent_idx] = (
+                self._allowed_mask_from_actions(candidate_actions, valid_masks[agent_idx])
+                if candidate_actions
+                else valid_masks[agent_idx].copy()
+            )
 
             proposed_action = final_actions[agent_idx]
             proposed_is_admissible = proposed_action in candidate_actions if candidate_actions else False
-            if self.cfg.shield.mode == "safe":
-                proposed_is_admissible = proposed_action in hard_actions
-
-            agent_intervened = False
             if proposed_is_admissible:
-                self.agent_intervention_history[agent_idx].append(0)
+                processed_order.append(int(agent_idx))
                 continue
 
-            shield_triggered = True
-            triggered_agents += 1
+            agent_triggered_flags[agent_idx] = True
             if candidate_actions:
                 selected_action, selected_mask = self.resample_action_from_allowed_set(
                     actor_preferences[agent_idx],
@@ -1208,31 +2089,45 @@ class CentralizedSafetyShield:
                 )
                 effective_masks[agent_idx] = selected_mask
             else:
-                fallback_triggered = True
-                self.fallback_count += 1
-                fallback_candidates = np.flatnonzero(valid_masks[agent_idx]).tolist()
-                if fallback_candidates:
-                    selected_action, selected_mask = self.resample_action_from_allowed_set(
-                        actor_preferences[agent_idx],
-                        fallback_candidates,
-                        valid_masks[agent_idx],
-                        selection_mode=selection_mode,
-                    )
-                    effective_masks[agent_idx] = selected_mask
-                else:
-                    selected_action = proposed_action
+                selected_action, selected_mask, dead_end_meta = self._resolve_empty_allowed_set(
+                    actor_preferences[agent_idx],
+                    proposed_action,
+                    valid_masks[agent_idx],
+                    hard_meta,
+                )
+                effective_masks[agent_idx] = selected_mask
+                if bool(dead_end_meta.get("used_emergency", False)):
+                    agent_emergency_flags[agent_idx] = True
+                if bool(dead_end_meta.get("guarantee_broken", False)):
+                    agent_guarantee_broken_flags[agent_idx] = True
             if selected_action != proposed_action:
-                agent_intervened = True
-                action_replaced = True
-                replaced_agents += 1
-                self.action_replaced_count += 1
+                agent_replaced_flags[agent_idx] = True
             final_actions[agent_idx] = int(selected_action)
             planned_next_positions[agent_idx] = self._single_next_position(state, agent_idx, int(selected_action))
-            self.agent_intervention_history[agent_idx].append(1 if agent_intervened else 0)
+            processed_order.append(int(agent_idx))
+
+        for agent_idx in range(n_agents):
+            self.agent_intervention_history[agent_idx].append(1 if agent_replaced_flags[agent_idx] else 0)
+
+        shield_triggered = bool(any(agent_triggered_flags))
+        action_replaced = bool(any(agent_replaced_flags))
+        triggered_agents = int(sum(int(flag) for flag in agent_triggered_flags))
+        replaced_agents = int(sum(int(flag) for flag in agent_replaced_flags))
+        emergency_triggered = bool(any(agent_emergency_flags))
+        emergency_agents = int(sum(int(flag) for flag in agent_emergency_flags))
+        guarantee_broken = bool(any(agent_guarantee_broken_flags))
+        guarantee_broken_agents = int(sum(int(flag) for flag in agent_guarantee_broken_flags))
+        fallback_triggered = bool(emergency_triggered)
+        recursive_gate_ran = bool(recursive_gate_agents > 0)
+        dead_end_hard_triggered = bool(any(size == 0 for size in hard_sizes))
 
         if shield_triggered:
             self.shield_trigger_count += 1
             self.shield_agent_trigger_count += triggered_agents
+        self.action_replaced_count += replaced_agents
+        self.emergency_count += emergency_agents
+        self.guarantee_broken_count += guarantee_broken_agents
+        self.fallback_count += emergency_agents
         self.recent_trigger_history.append(1 if shield_triggered else 0)
         if self.cfg.shield.mode == "recursive":
             if recursive_gate_ran:
@@ -1269,9 +2164,14 @@ class CentralizedSafetyShield:
             "min_hard_action_count_step": float(np.min(hard_sizes)) if hard_sizes else 0.0,
             "min_safe_action_count_step": float(np.min(hard_sizes)) if hard_sizes else 0.0,
             "min_rec_action_count_step": float(np.min(rec_sizes)) if rec_sizes else 0.0,
-            "dead_end_hard": bool(any(size == 0 for size in hard_sizes)),
-            "dead_end_safe": bool(any(size == 0 for size in hard_sizes)),
-            "dead_end_rec": bool(any(size == 0 for size in rec_sizes)),
+            "dead_end": bool(dead_end_hard_triggered or any(dead_end_rec_flags)),
+            "dead_end_hard": bool(dead_end_hard_triggered),
+            "dead_end_safe": bool(dead_end_hard_triggered),
+            "dead_end_rec": bool(any(dead_end_rec_flags)),
+            "emergency_triggered": bool(emergency_triggered),
+            "emergency_agents": int(emergency_agents),
+            "guarantee_broken": bool(guarantee_broken),
+            "guarantee_broken_agents": int(guarantee_broken_agents),
             "shield_fallback_triggered": bool(fallback_triggered),
             "shield_fallback_count": int(self.fallback_count),
             "min_uav_uav_margin": float(margins["min_uav_uav_margin"]),
@@ -1289,10 +2189,24 @@ class CentralizedSafetyShield:
             "risk_hist": float(np.mean(risk_hist_scores)) if risk_hist_scores else 0.0,
             "risk_support": float(np.mean(risk_support_scores)) if risk_support_scores else 0.0,
             "high_risk_agents": int(high_risk_agents),
-            "high_risk_rate_step": float(high_risk_agents / max(1, self.cfg.env.n_uavs)),
+            "high_risk_rate_step": float(high_risk_agents / max(1, n_agents)),
             "recursive_gate_agents": int(recursive_gate_agents),
-            "recursive_gate_rate_step": float(recursive_gate_agents / max(1, self.cfg.env.n_uavs)),
-            "risk_agent_count": int(self.cfg.env.n_uavs),
+            "recursive_gate_rate_step": float(recursive_gate_agents / max(1, n_agents)),
+            "risk_agent_count": int(n_agents),
+            "hard_repair_attempt_count_step": int(self._step_hard_repair_attempts),
+            "hard_repair_success_count_step": int(self._step_hard_repair_successes),
+            "future_witness_branch_count_step": float(self._step_future_witness_branches),
+            "exact_hard_query_count_step": int(self._step_exact_hard_queries),
+            "exact_hard_feasible_count_step": int(self._step_exact_hard_feasible),
+            "exact_hard_rescue_count_step": int(self._step_exact_hard_rescues),
+            "exact_hard_false_empty_count_step": int(self._step_exact_hard_false_empty),
+            "exact_hard_empty_query_count_step": int(self._step_exact_hard_empty_queries),
+            "exact_hard_action_count_step": float(self._step_exact_hard_action_total),
+            "future_beam_width_used_step": (
+                float(self._step_future_beam_width_sum / self._step_future_beam_calls)
+                if self._step_future_beam_calls > 0
+                else 0.0
+            ),
         }
         self._maybe_record("shield_time", total_start)
         return final_actions, effective_masks, step_stats

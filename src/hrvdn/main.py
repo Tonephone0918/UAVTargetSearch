@@ -55,8 +55,9 @@ def main():
     p.add_argument("--sparse-epochs", type=int, default=0)
     p.add_argument(
         "--normalize-dpm-reward",
-        action="store_true",
-        help="Normalize the DPM reward by n_uavs * map_size * map_size.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Normalize the DPM reward by n_uavs * map_size * map_size. Enabled by default.",
     )
     p.add_argument("--map-size", type=int, default=None)
     p.add_argument("--n-uavs", type=int, default=None)
@@ -126,9 +127,57 @@ def main():
         help="Enable the configured continuous risk score used to gate A_hard -> A_rec.",
     )
     p.add_argument(
+        "--shield-recursive-gate-mode",
+        choices=["full", "risk", "legacy"],
+        default=None,
+        help="Recursive gate mode: full runs A_rec every step, risk gates by score, legacy keeps the old heuristic gate.",
+    )
+    p.add_argument(
+        "--shield-dead-end-policy",
+        choices=["fail_closed", "emergency"],
+        default=None,
+        help="Explicit dead-end handling when A_hard or A_rec becomes empty.",
+    )
+    p.add_argument(
+        "--shield-adjudication-order",
+        choices=["fixed", "most_constrained_first"],
+        default=None,
+        help="Sequential A_hard adjudication order. most_constrained_first is the default cheap constrained-first ordering.",
+    )
+    p.add_argument(
+        "--shield-hard-repair-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable a tiny local second-pass repair before declaring A_hard dead-end.",
+    )
+    p.add_argument(
+        "--shield-hard-repair-depth",
+        type=int,
+        default=None,
+        help="How many recently adjudicated agents may be revisited by the local A_hard repair.",
+    )
+    p.add_argument(
+        "--shield-future-witness-mode",
+        choices=["single", "base_plus_clearance"],
+        default=None,
+        help="Witness proposal mode for the H=1 recursive feasibility checker.",
+    )
+    p.add_argument(
+        "--shield-future-beam-width",
+        type=int,
+        default=None,
+        help="Small beam width used by the recursive future-safe checker.",
+    )
+    p.add_argument(
+        "--shield-future-witness-top-k",
+        type=int,
+        default=None,
+        help="How many top-clearance future witnesses to keep before beam pruning.",
+    )
+    p.add_argument(
         "--shield-risk-variant",
         choices=["v1", "risk_base", "v_next", "v_next2"],
-        default=None,
+        default="risk_base",
         help="Risk variant: baseline v1 clear+region+hist, risk_base prop_clear+clear_gap+support+region, or v_next2 prop_clear+fragility+support+region. Legacy alias v_next is still accepted.",
     )
     p.add_argument(
@@ -159,7 +208,7 @@ def main():
         "--shield-risk-clear-gap-norm",
         type=float,
         default=None,
-        help="Normalization constant for the risk_base proposed-vs-best clearance gap risk.",
+        help="Normalization constant for the risk_base proposed-vs-best clearance  gap risk.",
     )
     p.add_argument(
         "--shield-risk-support-clearance-margin",
@@ -228,7 +277,7 @@ def main():
         type=int,
         default=None,
         help="Sliding window size W for history risk.",
-    )
+    ) 
     p.add_argument(
         "--shield-risk-threshold",
         type=float,
@@ -240,7 +289,7 @@ def main():
         type=float,
         default=None,
         help="Normalization constant for local threat-count risk.",
-    )
+    )  
     p.add_argument(
         "--shield-legacy-recursive-gate",
         action=argparse.BooleanOptionalAction,
@@ -251,9 +300,9 @@ def main():
         "--shield-progressive-enabled",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Reserved hook for later progressive shielding work.",
+        help="Reserved hook for later progressive shielding work.",  
     )
-    p.add_argument(
+    p.add_argument( 
         "--shield-lookahead-horizon",
         type=int,
         default=None,
@@ -265,7 +314,7 @@ def main():
         default=None,
         help="Reserved hook for later risk-aware scheduling work.",
     )
-    p.add_argument("--resume", type=str, default=None, help="Path to checkpoint, e.g. checkpoints/latest.pt")
+    p.add_argument("--resume", type=str, default=None, help="Path to checkpoint, e.g. checkp oints/latest.pt")
     p.add_argument("--checkpoint-dir", type=str, default=None, help="Directory for saved checkpoints.")
     p.add_argument("--tensorboard-dir", type=str, default=None, help="Directory for TensorBoard logs.")
     p.add_argument("--skip-train", action="store_true", help="Skip training and only run validation/report.")
@@ -320,8 +369,8 @@ def main():
         cfg.train.dense_epochs = args.dense_epochs
     if args.sparse_epochs is not None:
         cfg.train.sparse_epochs = args.sparse_epochs
-    if args.normalize_dpm_reward:
-        cfg.reward.normalize_dpm_reward = True
+    if args.normalize_dpm_reward is not None:
+        cfg.reward.normalize_dpm_reward = args.normalize_dpm_reward
     if args.shield_enabled is not None:
         cfg.shield.enabled = args.shield_enabled
     if args.shield_mode is not None:
@@ -335,6 +384,8 @@ def main():
         cfg.shield.log_stats = args.shield_log_stats
     if args.shield_profile_enabled is not None:
         cfg.shield.profile_enabled = args.shield_profile_enabled
+    else:
+        cfg.shield.profile_enabled = cfg.shield.mode in {"safe", "recursive"}
     if args.shield_cache_enabled is not None:
         cfg.shield.cache_enabled = args.shield_cache_enabled
     if args.shield_refine_enabled is not None:
@@ -347,6 +398,23 @@ def main():
         cfg.shield.near_miss_margin = args.shield_near_miss_margin
     if args.shield_risk_score_enabled is not None:
         cfg.shield.risk_score_enabled = args.shield_risk_score_enabled
+    if args.shield_recursive_gate_mode is not None:
+        cfg.shield.recursive_gate_mode = args.shield_recursive_gate_mode
+        cfg.shield.legacy_recursive_gate = args.shield_recursive_gate_mode == "legacy"
+    if args.shield_dead_end_policy is not None:
+        cfg.shield.dead_end_policy = args.shield_dead_end_policy
+    if args.shield_adjudication_order is not None:
+        cfg.shield.adjudication_order = args.shield_adjudication_order
+    if args.shield_hard_repair_enabled is not None:
+        cfg.shield.hard_repair_enabled = args.shield_hard_repair_enabled
+    if args.shield_hard_repair_depth is not None:
+        cfg.shield.hard_repair_depth = args.shield_hard_repair_depth
+    if args.shield_future_witness_mode is not None:
+        cfg.shield.future_witness_mode = args.shield_future_witness_mode
+    if args.shield_future_beam_width is not None:
+        cfg.shield.future_beam_width = args.shield_future_beam_width
+    if args.shield_future_witness_top_k is not None:
+        cfg.shield.future_witness_top_k = args.shield_future_witness_top_k
     if args.shield_risk_variant is not None:
         cfg.shield.risk_variant = canonicalize_risk_variant(args.shield_risk_variant)
     if args.shield_risk_weight_clear is not None:
@@ -416,7 +484,7 @@ def main():
         shield_override_kwargs["mode"] = cfg.shield.mode
     if args.shield_log_stats is not None:
         shield_override_kwargs["log_stats"] = cfg.shield.log_stats
-    if args.shield_profile_enabled is not None:
+    if args.shield_profile_enabled is not None or args.shield_enabled is not None or args.shield_mode is not None:
         shield_override_kwargs["profile_enabled"] = cfg.shield.profile_enabled
     if args.shield_cache_enabled is not None:
         shield_override_kwargs["cache_enabled"] = cfg.shield.cache_enabled
@@ -430,6 +498,23 @@ def main():
         shield_override_kwargs["near_miss_margin"] = cfg.shield.near_miss_margin
     if args.shield_risk_score_enabled is not None:
         shield_override_kwargs["risk_score_enabled"] = cfg.shield.risk_score_enabled
+    if args.shield_recursive_gate_mode is not None:
+        shield_override_kwargs["recursive_gate_mode"] = cfg.shield.recursive_gate_mode
+        shield_override_kwargs["legacy_recursive_gate"] = cfg.shield.legacy_recursive_gate
+    if args.shield_dead_end_policy is not None:
+        shield_override_kwargs["dead_end_policy"] = cfg.shield.dead_end_policy
+    if args.shield_adjudication_order is not None:
+        shield_override_kwargs["adjudication_order"] = cfg.shield.adjudication_order
+    if args.shield_hard_repair_enabled is not None:
+        shield_override_kwargs["hard_repair_enabled"] = cfg.shield.hard_repair_enabled
+    if args.shield_hard_repair_depth is not None:
+        shield_override_kwargs["hard_repair_depth"] = cfg.shield.hard_repair_depth
+    if args.shield_future_witness_mode is not None:
+        shield_override_kwargs["future_witness_mode"] = cfg.shield.future_witness_mode
+    if args.shield_future_beam_width is not None:
+        shield_override_kwargs["future_beam_width"] = cfg.shield.future_beam_width
+    if args.shield_future_witness_top_k is not None:
+        shield_override_kwargs["future_witness_top_k"] = cfg.shield.future_witness_top_k
     if args.shield_risk_variant is not None:
         shield_override_kwargs["risk_variant"] = cfg.shield.risk_variant
     if args.shield_risk_weight_clear is not None:

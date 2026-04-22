@@ -3,6 +3,11 @@ from typing import List, Literal
 
 
 RiskVariant = Literal["v1", "risk_base", "v_next", "v_next2"]
+RecursiveGateMode = Literal["full", "risk", "legacy"]
+DeadEndPolicy = Literal["fail_closed", "emergency"]
+AdjudicationOrder = Literal["fixed", "most_constrained_first"]
+FutureWitnessMode = Literal["single", "base_plus_clearance"]
+HardSolverMode = Literal["sequential", "exact", "sequential_with_exact_rescue"]
 
 
 def canonicalize_risk_variant(name: str) -> str:
@@ -59,7 +64,7 @@ class RewardConfig:
 
     use_compensation: bool = True
     use_energy_penalty: bool = True
-    normalize_dpm_reward: bool = False
+    normalize_dpm_reward: bool = True
 
 
 @dataclass
@@ -123,6 +128,12 @@ class ShieldConfig:
     recursive_safe_action_threshold: int = 2
     recursive_recent_window: int = 5
     recursive_recent_trigger_threshold: int = 5
+    recursive_gate_mode: RecursiveGateMode = "risk"
+    hard_solver_mode: HardSolverMode = "sequential"
+    exact_diagnostics_enabled: bool = False
+    adjudication_order: AdjudicationOrder = "most_constrained_first"
+    hard_repair_enabled: bool = True
+    hard_repair_depth: int = 2
     risk_score_enabled: bool = True
     # Runtime default: risk_base is the renamed deployable successor of legacy
     # v_next. These are the main knobs to edit in config.py for new runs.
@@ -151,6 +162,10 @@ class ShieldConfig:
     risk_threshold: float = 0.35
     risk_threat_count_norm: float = 3.0
     legacy_recursive_gate: bool = False
+    dead_end_policy: DeadEndPolicy = "fail_closed"
+    future_witness_mode: FutureWitnessMode = "base_plus_clearance"
+    future_beam_width: int = 2
+    future_witness_top_k: int = 2
 
     # Reserved interface for later stages.
     progressive_enabled: bool = False
@@ -159,6 +174,24 @@ class ShieldConfig:
 
     def __post_init__(self) -> None:
         self.risk_variant = canonicalize_risk_variant(str(self.risk_variant))
+        if str(self.recursive_gate_mode) not in {"full", "risk", "legacy"}:
+            self.recursive_gate_mode = "risk"
+        if bool(self.legacy_recursive_gate):
+            self.recursive_gate_mode = "legacy"
+        self.legacy_recursive_gate = bool(self.recursive_gate_mode == "legacy")
+        if str(self.hard_solver_mode) not in {"sequential", "exact", "sequential_with_exact_rescue"}:
+            self.hard_solver_mode = "sequential"
+        self.exact_diagnostics_enabled = bool(self.exact_diagnostics_enabled)
+        if str(self.adjudication_order) not in {"fixed", "most_constrained_first"}:
+            self.adjudication_order = "most_constrained_first"
+        self.hard_repair_enabled = bool(self.hard_repair_enabled)
+        self.hard_repair_depth = max(0, int(self.hard_repair_depth))
+        if str(self.dead_end_policy) not in {"fail_closed", "emergency"}:
+            self.dead_end_policy = "fail_closed"
+        if str(self.future_witness_mode) not in {"single", "base_plus_clearance"}:
+            self.future_witness_mode = "base_plus_clearance"
+        self.future_beam_width = max(1, int(self.future_beam_width))
+        self.future_witness_top_k = max(1, int(self.future_witness_top_k))
         if self.risk_vnext_weight_prop_clear is not None:
             self.risk_base_weight_prop_clear = float(self.risk_vnext_weight_prop_clear)
         if self.risk_vnext_weight_clear_gap is not None:

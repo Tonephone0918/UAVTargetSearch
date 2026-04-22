@@ -40,6 +40,17 @@ class MAPPOTrainer:
         self.shield = CentralizedSafetyShield(cfg)
         self.summary_logger = SummaryCSVLogger(cfg.train.tensorboard_dir)
         self.writer = None
+        print(
+            "[MAPPOTrainer] shield "
+            f"enabled={cfg.shield.enabled} "
+            f"mode={cfg.shield.mode} "
+            f"hard_solver={cfg.shield.hard_solver_mode} "
+            f"recursive_gate={cfg.shield.recursive_gate_mode} "
+            f"dead_end={cfg.shield.dead_end_policy} "
+            f"profile={cfg.shield.profile_enabled} "
+            f"exact_diag={cfg.shield.exact_diagnostics_enabled} "
+            f"progressive={cfg.shield.progressive_enabled}"
+        )
         if cfg.train.use_tensorboard:
             try:
                 from torch.utils.tensorboard import SummaryWriter
@@ -85,9 +96,9 @@ class MAPPOTrainer:
 
         eps = 1e-8
         priorities = [
+            ("collisions", "min"),
             ("search_rate", "max"),
             ("coverage_rate", "max"),
-            ("collisions", "min"),
             ("error_rate", "min"),
             ("avg_reward", "max"),
         ]
@@ -367,6 +378,12 @@ class MAPPOTrainer:
                     "epoch": ep,
                     "phase": phase,
                     "mode": self.cfg.shield.mode,
+                    "hard_solver_mode": self.cfg.shield.hard_solver_mode,
+                    "recursive_gate_mode": self.cfg.shield.recursive_gate_mode,
+                    "dead_end_policy": self.cfg.shield.dead_end_policy,
+                    "risk_variant": self.cfg.shield.risk_variant,
+                    "exact_diagnostics_enabled": float(self.cfg.shield.exact_diagnostics_enabled),
+                    "progressive_enabled": float(self.cfg.shield.progressive_enabled),
                     "episodes": 1,
                     **info,
                 }
@@ -400,6 +417,12 @@ class MAPPOTrainer:
                         "epoch": ep,
                         "phase": phase,
                         "mode": self.cfg.shield.mode,
+                        "hard_solver_mode": self.cfg.shield.hard_solver_mode,
+                        "recursive_gate_mode": self.cfg.shield.recursive_gate_mode,
+                        "dead_end_policy": self.cfg.shield.dead_end_policy,
+                        "risk_variant": self.cfg.shield.risk_variant,
+                        "exact_diagnostics_enabled": float(self.cfg.shield.exact_diagnostics_enabled),
+                        "progressive_enabled": float(self.cfg.shield.progressive_enabled),
                         "episodes": 5,
                         **m,
                     }

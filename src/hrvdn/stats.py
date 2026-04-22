@@ -14,6 +14,12 @@ SUMMARY_CSV_FIELDS = [
     "epoch",
     "phase",
     "mode",
+    "hard_solver_mode",
+    "recursive_gate_mode",
+    "dead_end_policy",
+    "risk_variant",
+    "exact_diagnostics_enabled",
+    "progressive_enabled",
     "episodes",
     "episode_steps",
     "total_steps",
@@ -44,12 +50,41 @@ SUMMARY_CSV_FIELDS = [
     "avg_rec_action_count",
     "min_safe_action_count",
     "min_rec_action_count",
+    "dead_end_count",
+    "dead_end_rate",
     "dead_end_hard_count",
     "dead_end_hard_rate",
     "dead_end_safe_count",
     "dead_end_safe_rate",
     "dead_end_rec_count",
     "dead_end_rec_rate",
+    "exact_hard_query_count",
+    "exact_hard_feasible_count",
+    "exact_hard_rescue_count",
+    "exact_hard_false_empty_count",
+    "exact_hard_empty_query_count",
+    "exact_hard_false_empty_rate",
+    "exact_hard_action_count",
+    "seq_exact_compare_count",
+    "seq_empty_count",
+    "seq_nonempty_count",
+    "seq_empty_exact_nonempty_count",
+    "seq_empty_exact_nonempty_rate",
+    "seq_nonempty_exact_empty_count",
+    "seq_nonempty_exact_empty_rate",
+    "seq_exact_intersection_size",
+    "seq_exact_jaccard",
+    "hard_repair_attempt_count",
+    "hard_repair_success_count",
+    "hard_repair_success_rate",
+    "emergency_count",
+    "emergency_rate",
+    "emergency_agent_count",
+    "emergency_agent_rate",
+    "guarantee_broken_count",
+    "guarantee_broken_rate",
+    "guarantee_broken_agent_count",
+    "guarantee_broken_agent_rate",
     "shield_penalty_sum",
     "shield_penalty_rate",
     "shield_fallback_count",
@@ -65,10 +100,14 @@ SUMMARY_CSV_FIELDS = [
     "high_risk_rate",
     "recursive_gate_agent_count",
     "recursive_gate_rate",
+    "future_witness_branch_count",
+    "avg_future_witness_branch_count",
+    "future_beam_width_used",
     "perf_step_time_ms",
     "perf_shield_time_ms",
     "perf_hard_time_ms",
     "perf_safe_time_ms",
+    "perf_exact_hard_time_ms",
     "perf_rule_mask_time_ms",
     "perf_refine_time_ms",
     "perf_predict_time_ms",
@@ -113,9 +152,29 @@ class EpisodeStatsAccumulator:
         self.shield_fallback_count = 0
         self.shield_penalty_sum = 0.0
         self.near_miss_count = 0
+        self.dead_end_count = 0
         self.dead_end_hard_count = 0
         self.dead_end_safe_count = 0
         self.dead_end_rec_count = 0
+        self.exact_hard_query_count = 0
+        self.exact_hard_feasible_count = 0
+        self.exact_hard_rescue_count = 0
+        self.exact_hard_false_empty_count = 0
+        self.exact_hard_empty_query_count = 0
+        self.exact_hard_action_total = 0.0
+        self.seq_exact_compare_count = 0
+        self.seq_empty_count = 0
+        self.seq_nonempty_count = 0
+        self.seq_empty_exact_nonempty_count = 0
+        self.seq_nonempty_exact_empty_count = 0
+        self.seq_exact_intersection_size_total = 0.0
+        self.seq_exact_jaccard_total = 0.0
+        self.hard_repair_attempt_count = 0
+        self.hard_repair_success_count = 0
+        self.emergency_count = 0
+        self.emergency_agent_count = 0
+        self.guarantee_broken_count = 0
+        self.guarantee_broken_agent_count = 0
         self.total_agent_steps = 0
         self.min_uav_margins: list[float] = []
         self.mean_uav_margins: list[float] = []
@@ -136,6 +195,8 @@ class EpisodeStatsAccumulator:
         self.risk_support_scores: list[float] = []
         self.high_risk_agent_count = 0
         self.recursive_gate_agent_count = 0
+        self.future_witness_branch_count = 0.0
+        self.future_beam_width_used_values: list[float] = []
 
     def update(self, info: Dict[str, float]) -> None:
         self.total_steps += 1
@@ -150,9 +211,29 @@ class EpisodeStatsAccumulator:
         self.shield_fallback_count += int(bool(info.get("shield_fallback_triggered", False)))
         self.shield_penalty_sum += float(info.get("shield_penalty", 0.0))
         self.near_miss_count += int(bool(info.get("near_miss", False)))
+        self.dead_end_count += int(bool(info.get("dead_end", False)))
         self.dead_end_hard_count += int(bool(info.get("dead_end_hard", info.get("dead_end_safe", False))))
         self.dead_end_safe_count += int(bool(info.get("dead_end_safe", False)))
         self.dead_end_rec_count += int(bool(info.get("dead_end_rec", False)))
+        self.exact_hard_query_count += int(info.get("exact_hard_query_count_step", 0))
+        self.exact_hard_feasible_count += int(info.get("exact_hard_feasible_count_step", 0))
+        self.exact_hard_rescue_count += int(info.get("exact_hard_rescue_count_step", 0))
+        self.exact_hard_false_empty_count += int(info.get("exact_hard_false_empty_count_step", 0))
+        self.exact_hard_empty_query_count += int(info.get("exact_hard_empty_query_count_step", 0))
+        self.exact_hard_action_total += float(info.get("exact_hard_action_count_step", 0.0))
+        self.seq_exact_compare_count += int(info.get("seq_exact_compare_count_step", 0))
+        self.seq_empty_count += int(info.get("seq_empty_count_step", 0))
+        self.seq_nonempty_count += int(info.get("seq_nonempty_count_step", 0))
+        self.seq_empty_exact_nonempty_count += int(info.get("seq_empty_exact_nonempty_count_step", 0))
+        self.seq_nonempty_exact_empty_count += int(info.get("seq_nonempty_exact_empty_count_step", 0))
+        self.seq_exact_intersection_size_total += float(info.get("seq_exact_intersection_size_step", 0.0))
+        self.seq_exact_jaccard_total += float(info.get("seq_exact_jaccard_total_step", 0.0))
+        self.hard_repair_attempt_count += int(info.get("hard_repair_attempt_count_step", 0))
+        self.hard_repair_success_count += int(info.get("hard_repair_success_count_step", 0))
+        self.emergency_count += int(bool(info.get("emergency_triggered", False)))
+        self.emergency_agent_count += int(info.get("emergency_agents", 0))
+        self.guarantee_broken_count += int(bool(info.get("guarantee_broken", False)))
+        self.guarantee_broken_agent_count += int(info.get("guarantee_broken_agents", 0))
         self.min_uav_margins.append(float(info.get("min_uav_uav_margin", 0.0)))
         self.mean_uav_margins.append(float(info.get("mean_uav_uav_margin", info.get("min_uav_uav_margin", 0.0))))
         self.min_threat_margins.append(float(info.get("min_uav_threat_margin", 0.0)))
@@ -176,6 +257,8 @@ class EpisodeStatsAccumulator:
         self.risk_support_scores.append(float(info.get("risk_support", 0.0)))
         self.high_risk_agent_count += int(info.get("high_risk_agents", 0))
         self.recursive_gate_agent_count += int(info.get("recursive_gate_agents", 0))
+        self.future_witness_branch_count += float(info.get("future_witness_branch_count_step", 0.0))
+        self.future_beam_width_used_values.append(float(info.get("future_beam_width_used_step", 0.0)))
         self.total_agent_steps += int(info.get("risk_agent_count", 0))
 
     def finalize(self, last_info: Dict[str, float], *, found_targets: int, shield_mode: str) -> Dict[str, float]:
@@ -212,12 +295,51 @@ class EpisodeStatsAccumulator:
             "min_hard_action_count": _safe_min(self.min_hard_action_counts),
             "min_safe_action_count": _safe_min(self.min_safe_action_counts),
             "min_rec_action_count": _safe_min(self.min_rec_action_counts),
+            "dead_end_count": float(self.dead_end_count),
+            "dead_end_rate": float(self.dead_end_count / steps),
             "dead_end_hard_count": float(self.dead_end_hard_count),
             "dead_end_hard_rate": float(self.dead_end_hard_count / steps),
             "dead_end_safe_count": float(self.dead_end_safe_count),
             "dead_end_safe_rate": float(self.dead_end_safe_count / steps),
             "dead_end_rec_count": float(self.dead_end_rec_count),
             "dead_end_rec_rate": float(self.dead_end_rec_count / steps),
+            "exact_hard_query_count": float(self.exact_hard_query_count),
+            "exact_hard_feasible_count": float(self.exact_hard_feasible_count),
+            "exact_hard_rescue_count": float(self.exact_hard_rescue_count),
+            "exact_hard_false_empty_count": float(self.exact_hard_false_empty_count),
+            "exact_hard_empty_query_count": float(self.exact_hard_empty_query_count),
+            "exact_hard_false_empty_rate": float(
+                self.exact_hard_false_empty_count / max(self.exact_hard_empty_query_count, 1)
+            ),
+            "exact_hard_action_count": float(self.exact_hard_action_total / max(self.exact_hard_query_count, 1)),
+            "seq_exact_compare_count": float(self.seq_exact_compare_count),
+            "seq_empty_count": float(self.seq_empty_count),
+            "seq_nonempty_count": float(self.seq_nonempty_count),
+            "seq_empty_exact_nonempty_count": float(self.seq_empty_exact_nonempty_count),
+            "seq_empty_exact_nonempty_rate": float(
+                self.seq_empty_exact_nonempty_count / max(self.seq_empty_count, 1)
+            ),
+            "seq_nonempty_exact_empty_count": float(self.seq_nonempty_exact_empty_count),
+            "seq_nonempty_exact_empty_rate": float(
+                self.seq_nonempty_exact_empty_count / max(self.seq_nonempty_count, 1)
+            ),
+            # Mean intersection size per compared agent-step.
+            "seq_exact_intersection_size": float(
+                self.seq_exact_intersection_size_total / max(self.seq_exact_compare_count, 1)
+            ),
+            # Mean Jaccard over compared agent-steps; both-empty is defined as 1.
+            "seq_exact_jaccard": float(self.seq_exact_jaccard_total / max(self.seq_exact_compare_count, 1)),
+            "hard_repair_attempt_count": float(self.hard_repair_attempt_count),
+            "hard_repair_success_count": float(self.hard_repair_success_count),
+            "hard_repair_success_rate": float(self.hard_repair_success_count / max(self.hard_repair_attempt_count, 1)),
+            "emergency_count": float(self.emergency_count),
+            "emergency_rate": float(self.emergency_count / steps),
+            "emergency_agent_count": float(self.emergency_agent_count),
+            "emergency_agent_rate": float(self.emergency_agent_count / agent_steps),
+            "guarantee_broken_count": float(self.guarantee_broken_count),
+            "guarantee_broken_rate": float(self.guarantee_broken_count / steps),
+            "guarantee_broken_agent_count": float(self.guarantee_broken_agent_count),
+            "guarantee_broken_agent_rate": float(self.guarantee_broken_agent_count / agent_steps),
             "shield_penalty_sum": float(self.shield_penalty_sum),
             "shield_penalty_rate": float(self.shield_penalty_sum / steps),
             "shield_fallback_count": float(self.shield_fallback_count),
@@ -233,6 +355,9 @@ class EpisodeStatsAccumulator:
             "high_risk_rate": float(self.high_risk_agent_count / agent_steps),
             "recursive_gate_agent_count": float(self.recursive_gate_agent_count),
             "recursive_gate_rate": float(self.recursive_gate_agent_count / agent_steps),
+            "future_witness_branch_count": float(self.future_witness_branch_count),
+            "avg_future_witness_branch_count": float(self.future_witness_branch_count / steps),
+            "future_beam_width_used": _safe_mean(self.future_beam_width_used_values),
             "mode_is_recursive": float(shield_mode == "recursive"),
         }
         return metrics
@@ -273,9 +398,33 @@ def log_summary_scalars(writer, split: str, metrics: Dict[str, float], step: int
         "min_hard_action_count",
         "min_safe_action_count",
         "min_rec_action_count",
+        "dead_end_rate",
         "dead_end_hard_rate",
         "dead_end_safe_rate",
         "dead_end_rec_rate",
+        "exact_hard_query_count",
+        "exact_hard_feasible_count",
+        "exact_hard_rescue_count",
+        "exact_hard_false_empty_count",
+        "exact_hard_empty_query_count",
+        "exact_hard_false_empty_rate",
+        "exact_hard_action_count",
+        "seq_exact_compare_count",
+        "seq_empty_count",
+        "seq_nonempty_count",
+        "seq_empty_exact_nonempty_count",
+        "seq_empty_exact_nonempty_rate",
+        "seq_nonempty_exact_empty_count",
+        "seq_nonempty_exact_empty_rate",
+        "seq_exact_intersection_size",
+        "seq_exact_jaccard",
+        "hard_repair_attempt_count",
+        "hard_repair_success_count",
+        "hard_repair_success_rate",
+        "emergency_rate",
+        "emergency_agent_rate",
+        "guarantee_broken_rate",
+        "guarantee_broken_agent_rate",
         "shield_penalty_sum",
         "shield_penalty_rate",
         "shield_fallback_count",
@@ -290,12 +439,16 @@ def log_summary_scalars(writer, split: str, metrics: Dict[str, float], step: int
         "high_risk_rate",
         "recursive_gate_agent_count",
         "recursive_gate_rate",
+        "future_witness_branch_count",
+        "avg_future_witness_branch_count",
+        "future_beam_width_used",
         "total_steps",
         "episode_steps",
         "perf_step_time_ms",
         "perf_shield_time_ms",
         "perf_hard_time_ms",
         "perf_safe_time_ms",
+        "perf_exact_hard_time_ms",
         "perf_rule_mask_time_ms",
         "perf_refine_time_ms",
         "perf_predict_time_ms",
@@ -322,6 +475,8 @@ def log_summary_scalars(writer, split: str, metrics: Dict[str, float], step: int
         writer.add_scalar("eval/avg_reward", float(metrics["avg_reward"]), step)
     if split == "train":
         writer.add_scalar("shield/fallback_count", float(metrics["shield_fallback_count"]), step)
+        writer.add_scalar("shield/emergency_rate", float(metrics.get("emergency_rate", 0.0)), step)
+        writer.add_scalar("shield/guarantee_broken_rate", float(metrics.get("guarantee_broken_rate", 0.0)), step)
         writer.add_scalar("shield/penalty", float(metrics["shield_penalty_sum"]), step)
         writer.add_scalar("shield/a_hard_size", float(metrics["avg_hard_action_count"]), step)
         writer.add_scalar("shield/a_safe_size", float(metrics["avg_safe_action_count"]), step)
