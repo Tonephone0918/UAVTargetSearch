@@ -1,0 +1,1543 @@
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                      1
+
+
+
+
+UAV Swarm Cooperative Search for Moving Targets
+via Hybrid-Rewards Deep Reinforcement Learning
+              Gaoqing Shen, Yuyang Yao, Lei Lei, Xiaolang Zhu, Pan Cao, Xiaochang Liu, Xueying Qian
+
+
+
+
+   Abstract—With the rapid development of low-altitude                                                                                        Satellite internet
+economies, unmanned aerial vehicle (UAV) swarm has attracted
+growing interest for cooperative target search. However, most                                      High                       Ad hoc networks
+existing studies focus on static targets and assume UAVs operate                                   Layer
+at a single horizontal altitude, limiting their practical appli-                                                                                     ĂĂ
+cability. This paper proposes a novel multi-UAV cooperative                                        Middle                                                                 Ad hoc networks
+                                                                                                   Layer
+search framework for moving targets based on multi-agent
+deep reinforcement learning (MADRL). By coordinating UAVs                                           Low                                      Ad hoc networks
+across high, medium, and low-altitude layers, the system achieves                                  Layer
+improved search efficiency through altitude-adaptive operations.
+We further introduce a revisit-time compensation mechanism to
+enhance detection performance for moving targets in a multi-                                                  5G                                            5G       5G
+layer UAV swarm. To address the challenges of slow convergence
+and sparse feedback in MADRL, we propose hybrid-reward-                                                                  Fire                 Urban                    Border
+                                                                                                                       Detection             Monitoring                Patrol
+based value decomposition networks (HRVDN) algorithm that
+integrates dense local rewards with sparse global rewards, accel-
+erating learning while encouraging agents to collect high-value                                  Fig. 1. Target search in multi-layer low-altitude UAV swarm.
+information. Simulation results demonstrate that the proposed
+approach outperforms existing methods in terms of target search
+rate and area coverage.
+                                                                                                 production [4], target tracking [5], reconnaissance and moni-
+   Index Terms—Cooperative target search, UAV swarm, moving
+targets, multi-agent deep reinforcement learning                                                 toring [6], and communication relay services [7].
+                                                                                                    Among these applications, multi-UAV cooperative target
+                                                                                                 search has emerged as a critical research area, particularly for
+                           I. I NTRODUCTION                                                      time-sensitive operations [8]. Compared to single-UAV strate-
+                                                                                                 gies, multi-UAV cooperation effectively addresses common
+       NMANNED aerial vehicles (UAVs) are aircraft capable
+U      of remote or autonomous operation, characterized by
+high flexibility, low production costs, ease of use, and adapt-
+                                                                                                 challenges in complex environments, such as missed detec-
+                                                                                                 tions, loss of target tracking, and prolonged search durations.
+                                                                                                 However, with the continuous expansion of UAV applications
+ability to a wide range of tasks [1]. In recent years, a
+                                                                                                 and increasing task complexity, multi-UAV cooperative search
+new economic model—referred to as the low-altitude econ-
+                                                                                                 operations face significant challenges [9]. For example, the
+omy—has emerged alongside the rapid advancement of UAV
+                                                                                                 curse of dimensionality arises as the number of UAVs and tar-
+technologies. The core of the low-altitude economy lies in
+                                                                                                 gets grows, causing significant computational complexity and
+constructing UAV swarm systems through the integration of
+                                                                                                 negatively affecting real-time search efficiency [10]. In such
+ad hoc networks, 5G, satellite internet, and artificial intelli-
+                                                                                                 scenarios, the problem is typically modeled as a non-convex
+gence, forming intelligent low-altitude UAV networks. This
+                                                                                                 optimization problem. To address this, a search-information
+paradigm shift significantly improves operational efficiency
+                                                                                                 map, such as a target-probability map or pheromone map, is
+and system resilience against failures. Currently, UAV swarms
+                                                                                                 constructed to represent the environment. Various approaches
+have been widely applied across various domains, including
+                                                                                                 are then employed to solve the problem, including bio-inspired
+traffic surveillance [2], search-and-rescue missions [3], film
+                                                                                                 swarm-optimization algorithms [11], artificial-potential-field
+  This work was supported in part by the National Natural Science Foundation
+                                                                                                 methods [12], and heuristic algorithms [13]. While these
+of China under Grant 62371232, Natural Science Foundation of Jiangsu                             traditional methods demonstrate robustness in handling non-
+Province under Grant BK20241387, and China Postdoctoral Science Foun-                            convex optimization problems, they often rely heavily on prior
+dation under Grant 2024M764237. (corresponding author : Lei Lei).
+  Gaoqing Shen and Xiaolang Zhu are with the Fundamental Exper-
+                                                                                                 environmental information and suffer from limitations such as
+imental Teaching Department, Nanjing University of Aeronautics and                               local optima trapping and poor real-time performance.
+Astronautics, Nanjing 211106, China (e-mail: shengaoqing@nuaa.edu.cn;                               Reinforcement learning (RL), a branch of machine learning,
+xlzhu@nuaa.edu.cn).
+  Yuyang Yao, Lei Lei, Pan Cao, Xiaochang Liu, and Xueying Qian are                              enables agents to learn optimal strategies through trial-and-
+with the College of Electronic and Information Engineering, Nanjing Uni-                         error interactions with the environment. It has been widely ap-
+versity of Aeronautics and Astronautics, Nanjing, 211106, China (e-mail:                         plied in recent years [14]. Neural networks, with their capacity
+SX2404066@nuaa.edu.cn; leilei@nuaa.edu.cn; caopan@nuaa.edu.cn; liuxi-
+aochang@nuaa.edu.cn; qianxueying@nuaa.edu.cn).                                                   to process large-scale spatial data, further enhance RL’s effec-
+                                                                                                 tiveness in complex tasks. Integrating swarm intelligence with
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                      2
+
+
+
+deep reinforcement learning (DRL) offers promising solutions                                            for    MADRL: The hybrid-reward-based value
+for multi-UAV target-search problems.When applied to large-                                             decomposition networks (HRVDN) algorithm is
+scale environments, DRL transforms each UAV into an agent,                                              proposed to balance exploration efficiency and
+framing the problem as a multi-agent deep reinforcement                                                 robustness in MADRL. Early-stage dense rewards
+learning (MADRL) challenge. MADRL is inherently complex                                                 accelerate environment exploration, while late-stage
+due to non-stationary environments and partial observability                                            sparse rewards mitigate noise interference. Training
+[15]. The centralized training with decentralized execution                                             bias is eliminated through network parameter resetting
+(CTDE) paradigm addresses these issues by leveraging global                                             and reward recalculation, enabling stable and efficient
+insights during training while enabling decentralized execu-                                            policy learning.
+tion. CTDE-based methods significantly improve scalability                                          The remainder of this paper is structured as follows: Section
+and practicality, making them ideal for multi-target search in                                   II provides an overview of related work on cooperative target
+complex scenarios.                                                                               search and the application of MADRL. Section III defines the
+   However, while numerous studies have applied MADRL to                                         system model. The proposed algorithm HRVDN is presented
+multi-target search problems, most existing studies in this area                                 in Section IV. Experimental results are provided in Section V
+have several key limitations that restrict their practical applica-                              to validate the effectiveness of the proposed algorithm. Finally,
+bility. First, most existing research in cooperative search does                                 Section VI concludes the paper and outlines future research
+not fully account for complex operational conditions. These                                      directions.
+include the presence of mobile targets and dynamic obstacles,
+limited inter-UAV communication ranges, and the risk of                                                                          II. R ELATED W ORK
+collision, particularly within large-scale UAV swarms. This
+oversight leads to strategies that are ineffective or impractical                                A. Cooperative Target Search
+when deployed in such dynamic environments. Second, most                                            Cooperative target search refers to the process in which
+existing models assume that UAVs operate at a single, fixed                                      multiple agents or systems, such as robots, drones, or sensors,
+flight altitude. This simplification restricts the action space of                               collaborate to locate and track targets. The main challenges of
+the UAVs, making them unable to dynamically balance the                                          cooperative target search include ensuring effective commu-
+trade-off between a wider search range and a higher detection                                    nication and coordination among agents, managing resources
+rate by adjusting their altitude [16], thereby hindering the                                     like energy and time, avoiding collisions, and developing
+overall search performance. Furthermore, the optimization                                        robust algorithms that can adapt to dynamic changes in the
+of convergence speed and reward feedback mechanisms for                                          search area, etc. Additionally, scalability and system integra-
+MADRL algorithms in complex environments remains a crit-                                         tion pose difficulties when expanding the number of agents
+ical, open challenge in DRL-based cooperative search.                                            involved. The target search problem can be divided into static
+   To address these limitations, this paper proposes a novel                                     and moving target search according to the target’s mobility.
+cooperative search model based on MADRL for scenarios with                                       Static target search is usually regarded as a Coverage Path
+dynamic targets and moving obstacles. In the proposed model,                                     Planning (CPP) problem which can be solved by a series
+the multi-UAV system operates at variable flight altitudes                                       of mature algorithms such as Back-and-Forth patterns and
+to adapt to environmental constraints and task requirements,                                     cellular decomposition methods. The well-known Zamboni
+while the MADRL model employs a staged training mecha-                                           search algorithm utilized parallel trajectories to cover the task
+nism based on hybrid rewards to improve the convergence rate                                     area effectively and accomplish the search task [17]. Chen
+and overall performance. The key contributions of this work                                      et al. [18] proposed an Ant Colony System (ACS) based
+are summarized as follows:                                                                       approach to allocate regions and optimize the visiting orders
+   1) Hierarchical UAV Search Model with Altitude Adap-                                          to minimize the task completion time in large-scale cooper-
+       tation: A hierarchical multi-UAV search model is pro-                                     ative search systems. In [19], An et al. proposed a Multi-
+       posed for large-scale environments, reducing complexity                                   robot Coverage Path Planning (MCPP) algorithm in outdoor
+       through discretized flight altitude layers and grid parti-                                complex environments that combines grid decomposition and
+       tioning. Dynamic environmental awareness is achieved                                      an improved Spanning Tree Coverage (STC) algorithm.
+       via integrated target probability, search time, and dig-                                     However, when the static target position is unknown or
+       ital pheromone maps, with an altitude-adaptive update                                     the target is moving, traditional CPP may lead to a waste of
+       mechanism to ensure real-time adaptability.                                               search resources and cannot handle complex dynamic search
+   2) Three-Stage Target Probability Map Update Mecha-                                           environments. Therefore, many scholars chose to solve the
+       nism: To address map reliability degradation caused by                                    problem by applying various optimization methods. Shen et
+       moving targets, a three-stage update framework is intro-                                  al. divided the search process into two stages, frequency-
+       duced: (a) Bayesian inference for detection updates; (b)                                  domain search is to lock the frequency of the target, and spatial
+       neighborhood information fusion using positive/negative                                   search is to find the position of the target by Bird-Inspired
+       detection count maps; and (c) revisit-time compensa-                                      Search (BIS) strategies [20]. Duan et al. proposed a dynamic
+       tion to refine probability estimates. This mechanism                                      discrete Pigeon-Inspired Optimization(PIO) approach for an
+       significantly enhances search performance in dynamic                                      unknown static target search-attack problem, a probability
+       scenarios.                                                                                map was constructed and updated using Bayes’ formula to
+   3) Dense-to-Sparse          Hybrid        Reward         Design                               guide subsequent search actions while avoiding static threats
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                      3
+
+
+
+                                                                               TABLE I
+                                                              C OMPARISON B ETWEEN THE E XISTING S TUDIES
+
+                                            Sensor                 Communication                 Obstacle           Target            Swarm                                   Variable
+   Reference         Method                                                                                                                             Scalable
+                                             Model                    Range                       Type               Type               Size                                UAVs’ altitude
+      [20]            BIS                 Deterministic               Limited                      No               Static             Large                No                   No
+      [11]            PIO                 Probabilistic               Limited                     Static            Static            Medium                No                   No
+      [21]           GBNN                 Probabilistic              Unlimited                    Static            Static             Small                No                   No
+      [12]         HAPF-ACO               Probabilistic               Limited                     Static            Moving            Medium                Yes                  No
+      [22]           LoPSO                Probabilistic               Limited                      No               Moving             Large                Yes                  No
+      [23]           MEGA                 Probabilistic              Unlimited                     No               Moving             Small                Yes                  No
+       [7]         BLLL-DBO               Deterministic               Limited                      No               Moving            Medium                Yes                  No
+      [24]            DRL                 Deterministic               Limited                    Moving             Moving            Medium                Yes                  No
+      [25]            DRL                 Deterministic               Limited                      No               Moving             Small                No                  Yes
+      [26]          MADRL                 Probabilistic               Limited                    Moving             Static             Large                Yes                  No
+      [27]          MADRL                 Probabilistic              Unlimited                     No               Static             Small                Yes                  No
+   This work        MADRL                 Probabilistic               Limited                    Moving             Moving             Large                Yes                 Yes
+
+collision [11]. Among various types of approach, Bio-inspired                                    targets. Simulation results verified that RL is effective in target
+Neural Network (BNN) has an advantage of not relying on                                          search tasks. In [24], the authors utilized convex polygon
+prior knowledge and not involving a learning process. In [21],                                   theory to search and surround a moving target, while using
+the authors organized the Glasius BNN (GBNN) to represent                                        an improved DQN algorithm. Wei et al. [25] proposed a
+the searching environment, the UAV’s search trajectory can                                       novel joint unmanned aerial-surface-underwater vehicle (UAV-
+be selected greedily based on the dynamic activity landscape                                     USV-UUV) network, where the UAV was used to search
+of GBNN. The Gaussian Mixture Model (GMM) is utilized                                            for target positions, the USV operated as a communication
+to extract the high-value subregions and avoid the local op-                                     relay, and the UUV was utilized as the target hunter. The
+timal problem of GBNN. Despite the advantages, the BNN                                           authors of [25] took the altitude of the UAV flight into
+algorithm does not take target or obstacle motion issues into                                    consideration, where altitude affects the detection radius and
+consideration.                                                                                   further affects the detection range, making the setup closer
+   Since cooperative UAV search for moving targets is much                                       to the real situation. Reward design has also become a key
+more complex, as the position of the moving target is con-                                       issue in the design of RL algorithms. Liu et al. [31] addressed
+stantly changing, the search trajectory of the UAV must be                                       the challenge of ensuring safety in human-robot collaboration
+planned in real-time during the search. In [28], the authors                                     during manufacturing by introducing an intrinsic reward–deep
+used Ant Colony Optimization (ACO) to tackle the multi-                                          deterministic policy gradient (IRDDPG) algorithm, optimizing
+UAV minimum time search problem and proposed a new                                               the robot’s policy for collision-free motion planning and task
+heuristic including UAVs’ and targets’ locations to accelerate                                   efficiency. In paper [32], Yu et al. proposed a DRL method for
+the searching process. Zhen et al. [12] presented a cooperative                                  quantum control, where rewards are automatically generated
+mission planning method for UAV swarms, combining a                                              based on the learning process information (DRL-LPI), which
+hybrid APF and ACO (HAPF-ACO) approach. In [22], the                                             includes state information and experiences without relying
+authors addressed challenges such as limited detection cover-                                    on human-designed rewards. [33] proposed a novel algorithm
+age and communication range, they introduced a decentralized                                     called Dense2Sparse by Network Resetting (D2SR) which
+target search model based on a local subswarms cooperative                                       combines the efficiency of dense rewards and robustness of
+and competitive particle swarm optimization (LoPSO) algo-                                        sparse rewards, thereby improving the overall convergence
+rithm. In [23], the authors presented a Motion-Encoded Ge-                                       performance.
+netic Algorithm with Multiple Parents (MEGAMP) to search                                            While the above use of multiple single agents to solve the
+moving targets, and the target search problem was converted                                      cooperative problem performs well at small scales, once the
+from a Cartesian problem to a motion-based one via space                                         number of agents increases, the nonstationary environment
+transformation using the motion encoding feature. Yan et al.                                     prevents the UAV swarm from learning an effective collab-
+[7] considered communication and energy capacity limitations                                     orative strategy. Multi-Agent Deep Reinforcement Learning
+and introduced a novel binary log-linear learning jointing dung                                  (MADRL) has emerged as a vital concept, addressing col-
+beetle optimizer algorithm (BLLL-DBO). The binary log-                                           laboration and competition challenges in multi-agent systems.
+linear learning module used to select the UAVs’ next action,                                     Leveraging CTDE paradigms, MADRL promises to optimize
+the dung beetle optimizer optimized the exact search path.                                       resource utilization and improve overall performance in co-
+                                                                                                 operative target search scenarios. Shen et al. [26] adopted a
+B. DRL in Cooperative Target Search                                                              MADRL method using digital twin and an improved QMIX
+   In recent years, the fusion of deep learning (DL) and                                         algorithm for the search mission. A novel information fusion
+RL has yielded significant breakthroughs, particularly DRL,                                      mechanism based on positive and negative detection times was
+which enhances modeling and decision-making in complex                                           presented for UAV information interaction. In [27], a belief
+environments [29]. Wu et al. [30] applied a Deep Q-network                                       probability map was constructed to offer a more precise rep-
+(DQN) algorithm in the game environment of the Snake Game                                        resentation of the target distribution. Additionally, the authors
+to simulate the process of static target search and shape the                                    introduced a new MADRL method named DCDDPG for the
+reward through the “Odor effect” to guide UAV to search                                          multi-UAV cooperative reconnaissance and search problem.
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                      4
+
+
+
+   Table I lists the comparison between the existing studies.
+It can be seen that although traditional cooperative target                                             Layer Lz
+search algorithms have been progressing towards handling
+larger scales and more complex environments, there is still
+no comprehensive or fully robust solution for dynamic target                                                                                     ĂĂ
+search in large-scale and dynamic environments. The solution
+complexity of most traditional methods increases with the                                              Layer 1
+number of targets and UAVs, and the real-time performance
+is not sufficient to adapt to dynamic environments. Although
+the MADRL method can effectively address the dynamic
+environment problem, there are relatively few studies applying
+it to cooperative dynamic target search. Drawing inspiration
+from the altitude-adaptive UAV model presented in paper
+[25] and the hybrid reward mechanics presented in [33], this
+paper establishes a UAV swarm search system based on this                                                                                                    Detection           Threat
+                                                                                                                  UAV           Target        Threat
+model and studies MADRL to solve the dynamic target search                                                                                                    range              range
+problem in large-scale, complex environments.
+                                                                                                 Fig. 2. The hierarchical search model.
+
+    III. S YSTEM M ODEL AND P ROBLEM F ORMULATION
+ In this section, the system model and objective function for
+multi-UAV cooperative search problem are introduced.                                             where pf (h) ∈ [0, pf (max) ], pf (max) is the maximum false
+                                                                                                 alarm probability of the sensor at altitude hmax . Based on
+                                                                                                 the characteristics of the sensor and the current altitude of the
+A. System Model                                                                                  UAV, specific detection probability and false alarm probability
+   1) Environment model: As illustrated in Fig. 2, assuming                                      can be obtained at a particular altitude.
+that the task area, denoted by Z, is a rectangle ground region                                      3) UAV motion model: The mission period is discretized
+with length Lx and width Ly . It is uniformly discretized                                        into T time steps, and UAVs only make movement decisions
+into square grids Gx , y with unit side length, and the grid                                     at the start of each time step. To reduce the solution space, the
+coordinates are expressed as gx,y = (x, y), where x ∈                                            UAV’s flight altitude is discretized with Lz layers. Therefore,
+{1, 2, ..., Lx } , y ∈ {1, 2, ..., Ly }.                                                         the coordinates of UAV i at timestep t can be denoted as
+   2) UAV detection model: The multi-UAV system consists                                         ui,t = (x, y, z), where 1 ≤ x ≤ Lx , 1 ≤ y ≤ Ly ,
+of Nu UAVs, represented by U = {ui , i ∈ {1, 2, ..., Nu }}.                                      and 1 ≤ z ≤ Lz . We use uH                              V
+                                                                                                                                    i,t = (x, y) and ui,t = z
+The performance of a UAV’s onboard sensor is primarily                                           to represent the horizontal and vertical coordinates, respec-
+characterized by its detection range and detection capabil-                                      tively. The n detection region of UAV i at layero z is denoted
+ity. The latter is defined by two key metrics: the detection                                     as Φi,z = Gx,y ∈ Z | gx,y − uH        i,t 2 ≤ Ri,z , where Ri,z
+probability Pd and the false alarm probability Pf . Here, Pd
+                                                                                                 represents the corresponding sensing radius and k•k denotes
+represents the likelihood of correctly identifying a target within
+                                                                                                 the Euclidean norm.
+the sensor’s range, while Pf represents the likelihood of
+incorrectly reporting a detection when no target is present.                                        The motions of UAVs are divided into horizontal and
+   For a sensor mounted beneath the UAV, its detection ca-                                       vertical components. In the horizontal level, there are four
+pability is fundamentally dependent on the detection distance                                    candidate motion behaviors namely forward, backward, left,
+to the target, i.e. the UAV’s flight altitude h. As h increases,                                 and right. If we use aH to represent the horizontal level
+the detection probability generally decreases. Accordingly, Pd                                   movement decision, the horizontal coordinates of UAV i at
+and Pf can be modeled as functions of h. As defined in [34],                                     timestep t + 1 can be expressed as the following equation
+detection probability can be modeled as
+                                                                                                           
+             
+              pd(max) ,                       h < hmin                                                    
+                                                                                                             (x, y + 1), aH = 0
+                    (hmax −h)                                                                                 (x, y − 1), aH = 1
+                                                                                                           
+  pd (h) =                       ×  pd(max) ,  hmin ≤ h ≤ hmax ,                                 uHi,t+1 =                             , 1 ≤ x ≤ Lx , 1 ≤ y ≤ Ly .
+              (hmax −hmin )                                                                                  (x −  1, y), aH = 2
+                  0,                           h>hmax
+                                                                                                           
+                                                                                                           
+                                                                                                              (x + 1, y), aH = 3
+                                                                                                           
+                                                               (1)
+                                                                                                                                                              (3)
+where pd (h) ∈ [0, pd(max) ], is the detection probability of the
+                                                                                                 However, due to the hardware performance limitations of
+sensor at altitude hmin . Similarly, false alarm probability can
+                                                                                                 UAVs in real-world environments, the UAV’s horizontal di-
+be modeled as
+                                                                                                rection of motion cannot be switched arbitrarily within two
+              0,                              h < hmin                                          consecutive time steps. Assuming that the angle between the
+                    (h−hmin )                                                                                           i,t
+  pf (h) =                       ×  pf (max) , hmin ≤ h ≤ hmax ,                                 horizontal velocity vx,y   of the UAV at the current time step
+              (hmax −hmin )                                                                                                     i,t+1
+                  pf (max) ,                   h>hmax                                            and the horizontal velocity vx,y      at the next time step must
+                                                               (2)                               not exceed the maximum turning angle θv , the horizontal
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                      5
+
+
+
+velocity of the UAV must satisfy:                                                                selecting a valid motion behavior from a set of candidates.
+                                                                                               A behavior is considered invalid if it would move the threat
+                         i,t    i,t+1
+                        vx,y · vx,y                                                              beyond the mission area boundary or into a grid already
+               arccos                 ≤ θv .                                          (4)
+                         i,t    i,t+1
+                        vx,y vx,y                                                                occupied by another threat.
+                                                                                                    5) Information fusion model: In cooperative search mis-
+   In the vertical level, there are three candidate motion                                       sions, UAVs must maintain situational awareness of the search
+behaviors namely ascend, descend, and hold. If we use aV                                         area to make distributed decisions about its next action. To
+to represent the vertical level movement decision, the vertical                                  facilitate this, each UAV maintains three types of informa-
+coordinate of UAV i at timestep t + 1 can be expressed as the                                    tion maps to represent its cognitive state: a Search Time
+following equation                                                                               Map (STM), a Target Probability Map (TPM), and a Digital
+                                                                                                Pheromone Map (DPM).
+                    z + 1, aV = 0                                                                  Search time map (STM): The STM of UAV i at time step
+         uVi,t+1 =     z − 1, aV = 1 , 1 ≤ z ≤ Lz .         (5)                                  t is expressed as
+                       z,       aV = 2
+                   
+                                                                                                                     Ei,t = εi,t
+                                                                                                                           
+                                                                                                                             x,y |Gx,y ∈ Z ,               (8)
+   4) Target and threat model: Supposing that there are Nm
+targets randomly distributed in the task area, represented                                       where εi,tx,y represents the latest timestamp that grid Gx,y was
+by M = {mi , i ∈ {1, 2, ..., Nm }}. To describe the targets’                                     detected by UAV i, and the initial value is set to 0. UAV i
+mobility, we employ the Gaussian-Markov Random Model                                             performs a weighted fusion of information received from its
+(GMRM), which is a common and effective model for predict-                                       neighbors [26]. We assume the UAVs communicate over an
+ing and estimating future mobility states [35], to approximate                                   ad hoc network with a maximum communication range of dc .
+the movement of ground combat vehicles. In GMRM, motion                                          Given their low-speed mobility (under 60 km/h), the impact
+decisions are made only at the beginning of each timestep,                                       of velocity on communication performance is considered neg-
+and the target updates its movement direction and speed based                                    ligible in our model [36]. The set of neighbors of UAV i at
+on the last movement state. Specifically, the speed vm  t
+                                                            and                                  time step t is expressed as Ni,t = {uj ∈ U | k ui,t − uj,t k ≤
+                                                          i
+             t
+direction θmi of the target mi at timestep t can be calculated                                   dc , i 6= j}. Upon the information fusion with neighbors, UAV
+as                                                                                               i update εi,tx,y to the maximum value among its own and its
+      t           t−1
+                                     p                                                           neighbors’ corresponding timestamps, as follows
+        vmi = αvm      + (1 − α)v̄ + p (1 − α2 )vxt−1
+                     i
+                                                       ,     (6)                                               εi,t            i,t     j,t
+                                                                                                                                                    
+                                                                                                                 x,y ← max εx,y ∪ εx,y | uj ∈ Ni,t .           (9)
+         t         t−1
+        θm i
+               = αθm i
+                       + (1 − α)θ̄ + (1 − α2 )θxt−1
+                 
+where α ∈ 0, 1 is a memory coefficient that adjusts the                                             Target probability map (TPM): The TPM of UAV i at
+mobility state, v̄ and θ̄ denote the mean speed and direction                                    time step t is expressed as
+of the target, respectively, and vxt−1 and θxt−1 are random                                                         Pi,t = pi,t
+                                                                                                                           
+                                                                                                                             x,y |Gx,y ∈ Z ,     (10)
+variables drawn from a standard normal distribution. The
+position of target mi at timestep t can be expressed as                                          where pi,t
+                                                                                                          x,y ∈ [0, 1] represents the probability that the target
+                  t                                                                             exists in grid Gx,y . Lacking any prior knowledge about the
+                   xmi = xt−1      t−1
+                           mi + vmi cos θmi
+                                           t−1
+                                                                                                 target’s location, number, or distribution, we initialize the
+                    t      t−1     t−1    t−1    ,           (7)
+                   ymi = ymi + vmi sin θmi                                                       probability map uniformly with pi,tx,y = 0.5 for all grids. This
+where (xtmi , ym  t
+                      ) and (xt−1     t−1                                                        approach adheres to the principle of indifference, where no
+                    i         mi , ymi ) represent the continuous
+horizontal coordinates of target mi . Since the mission area is                                  grid cell is favored over another. Setting the probability to
+modeled as a discrete scene, the grid coordinates of target                                      0.5 represents a state of maximum uncertainty, ensuring that
+mi can be expressed as gx,y     mi
+                                       = (x = round(xtmi ), y =                                  the initial belief state is completely unbiased and does not
+           t
+round(ymi )), where round(•) denotes rounding operation.                                         presuppose the presence or absence of a target in any specific
+   It should be noted that the target movement cannot exceed                                     location [36] [37].
+the boundary area, and there can only be one target in one grid.                                    Due to target movement, the accuracy of the target prob-
+When a target moves to the boundary, its motion direction will                                   ability values in certain grid areas may degrade over time.
+be reversed. Before moving, a target checks if its intended                                      This paper proposes a compensation mechanism designed
+destination grid is already occupied by another target. If it                                    to update the existence probability of target grids that lie
+is, a perturbation term will be added to the target’s motion                                     outside the detection area of the UAV swarm. Thus, the update
+direction to ensure that there is only one target in one grid.                                   process of TPM is divided into three steps: detection update,
+   Similarly, assume that there are Ne randomly dis-                                             communication update, and compensation update.
+tributed threats in the mission area, represented by E =                                            Step 1 (Detection Update): Accounting for the detection
+{ei , i ∈ {1, 2, ..., Ne }}. Threats can be static obstacles, dy-                                probability and false alarm probability of the sensor, the
+namic enemy aircraft, or any object that poses a threat to the                                   Bayesian criterion is used to update the target existence
+UAV. While each grid can contain at most one threat, a threat                                    probability in the detected grid, which is
+                                                                                                                      Pd pi,t
+                                                                                                            
+and a target may coexist in the same grid. The coordinate                                                                 x,y
+                                                                                                                                             bi,t
+                                                                                                             P pi,t +P (1−pi,t ) ,           x,y = 1
+                                                                                                            
+                                                       ei
+                                                                                                            
+values of threat ei can be expressed as gx,y                 = (x, y),                                                   d x,y       f        x,y
+                                                                                                   pi,t+1 =                         (1−Pd )pi,t
+                                                                                                                                            x,y
+                                                                                                                                                     bi,t      . (11)
+x ∈ {1, 2, ..., Lx } , y ∈ {1, 2, ..., Ly }. If the threat is dynamic,                                                                         i,t ,  x,y = 0
+                                                                                                    x,y                        i,t
+                                                                                                                   (1−P   d )px,y +(1−Pf )(1−px,y )
+                                                                                                                  
+                                                                                                                  
+its movement method is similar to that of a UAV by randomly                                                         pi,t
+                                                                                                                     x,y ,                           otherwise
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                         6
+
+
+
+Among them: bi,t x,y represents the detection result from UAV i                                  where si,t
+                                                                                                          x,y represents the pheromone value of grid Gx,y at
+for grid Gx,y at time step t, bi,t
+                                x,y = indicates a positive detec-                                time step t, which is updated as follows
+tion, while bi,t
+             x,y = 0 indicates a negative detection. A target
+                                                                                                                    
+                                                                                                           (1−Ea ) (1−Ga )(si,t−1            x,y
+                                                                                                                                                     i,t
+                                                                                                                                  x,y +Da Ka (t)) , px,y ≤ ξp
+is considered found in a cell if its probability pi,t
+                                                   x,y exceeds a                                 si,t
+                                                                                                   x,y =                                                         ,
+                                                                                                           0, otherwise
+predefined threshold ξP . To reduce complexity, a linear update                                                                                              (19)
+                                  i,t ∆
+method is introduced. Define ςx,y     = ln(1/pi,t
+                                               x,y − 1), then the                                where Ea is the evaporation coefficient of attraction
+update can be described as                                                                       pheromone, Ga is the propagation coefficient of attraction
+                          i,t+1    i,t                                                           pheromone, Da is the coefficient of the release of attraction
+                         ςx,y   = ςx,y + ∆i,t
+                                          x,y ,                                       (12)
+                                                                                                 pheromone, Kax,y (t) is the switching coefficient of whether
+where                                                                                            the grid releases attraction pheromone at time t, ξp is the
+                                                                                                predefined target existence threshold. When pi,t x,y exceeds the
+           ln(Pf /Pd ),                                   bi,t
+                                                            x,y = 1                              threshold ξp , it indicates the presence of a target in the grid,
+    i,t
+   ∆x,y =   ln((1 − Pf )/(1 − Pd )),                       bi,t
+                                                            x,y = 0  .                (13)       and the tracking mode is activated. Consequently, there is no
+            0,                                             otherwise
+          
+                                                                                                 need to revist this grid and the pheromone value of this grid
+   Step 2 (Communication Update): To facilitate information                                      should be set to 0. The switching coefficient Kax,y (t) can be
+fusion, each UAV cumulatively tracks the number of positive                                      derived as
+                                                                                                                       1, t − εi,t          i,t
+                                                                                                                    
+and negative detections, denoted by N (+) and N (−) respec-                                               x,y                  x,y > T0 or px,y > ζP
+                                                                                                        Ka (t) =                                       ,     (20)
+tively, for every grid cell. After UAV i performs a sensing                                                            0, otherwise
+action at timestep t, the counts for grid Gx,y within its field                                  where ζP is the predefined target revisit threshold.
+of view are updated as
+            i,t+1            i,t
+              Nx,y (−) = Nx,y     (−) + 1, bi,t
+                                            x,y = 0                                              B. Problem Formulation
+                                                    .     (14)
+              Nx,y (+) = Nx,y (+) + 1, bi,t
+                i,t+1         i,t
+                                            x,y = 1                                                The main goal of the UAVs in the search environment is
+During the information fusion step, each UAV i synchronizes                                      to find and track more moving targets as soon as possible.
+its positive and negative detection count maps with those of                                     Assuming the search mission takes T timesteps, the objective
+its neighbors [26]. Specifically, for each grid Gx,y , the UAV                                   function can be expressed as
+updates its local counts by taking the element-wise maximum                                                                      Ly
+                                                                                                                              Lx P
+                                                                                                                            T P
+                                                                                                                            P
+of its own value and the corresponding values received from                                                        max              1 i,T
+                                                                                                                    ai,t t=1 x=1 y=1 px,y >ξp
+its neighbors. This update rule is formally expressed as                                                 s.t.     C1 : 0 ≤ ui,t (x) ≤ Lx ,
+                                                                                                                       0 ≤ ui,t (y) ≤ Ly ,
+    i,t                   i,t         j,t
+                                                           
+     Nx,y (+) ← max Nx,y       (+) ∪ Nx,y  (+) | uj ∈ Ni,t 
+       i,t                 i,t         j,t                    .                                                        0 ≤ ui,t(z) ≤ Lz , i ∈{1, 2, ..., Nu } ,                              (21)
+     Nx,y   (−) ← max Nx,y     (+) ∪ Nx,y  (−) | uj ∈ Ni,t
+                                                                                                                                             i,t   i,t−1
+                                                             (15)                                                                          vx,y  ·vx,y
+                                                                                                                   C2 : arccos              i,t ≤ θv ,
+                                                                                                                                                    i,t−1
+        i,t
+Then, ςx,y   can be derived as                                                                                                   | ||       |
+                                                                                                                                           vx,y   vx,y
+                                                                                                                   C3 : kui,t − uj,t k ≤ RU min , uj,t ∈ i,t ,
+      i,t    i,t                Pf      i,t         1 − Pf                                                         C4 : kui,t − ek,t k ≤ RE min , ek,t ∈ E.
+     ςx,y = Nx,y (+) ln(           ) + Nx,y (−) ln(        ).                         (16)
+                                Pd                  1 − Pd
+                                                                                                   The objective function aims to maximize the total number
+   Step 3 (Compensation Update): When the elapsed time since                                    of detected targets subject to specific constraints. A target
+the last detection of a grid exceeds the predefined revisit                                     is considered detected if the existence probability exceeds
+threshold T0 , the corresponding map of N (+) and N (−) are                                     the existence threshold ξp . The constraints are explained as
+reset to 0, as the reliability of historical detection data dimin-                              follows:
+ishes over time. The revisit compensation mechanism works by                                    C1) 3D operational constraints: UAVs are restricted to a
+increasing the target existence probability in undetected grids                                      bounded 3D movement space.
+over time (up to 0.5) if a certain time has passed since the last                               C2) Horizontal turning limit: The UAV’s horizontal turning
+detection, in order to account for potential target presence. The                                    capability is constrained by the maximum turning angle
+mechanism can be formulated as                                                                       θv .
+           px,y + p∆ , t−εi,t                                                                  C3) Collision avoidance: A minimum separation distance
+           i,t                                  i,t
+                                 x,y > T0 and px,y < 0.5−p∆
+  i,t+1
+ px,y = 0.5,                     i,t
+                            t−εx,y > T0 and pi,t x,y > 0.5−p∆ ,
+                                                                                                     RU min must be maintained between UAVs to prevent
+           i,t
+                            t−εi,t                                                                   mid-air collisions.
+              px,y ,             x,y ≤ T0
+                                                              (17)                              C4) Threat avoidance: UAVs must maintain a minimum safety
+where p∆ is the probability increment for each time step.                                            distance RE min from environmental threats.
+   Digital pheromone map (DPM): In order to attract UAVs
+to revisit grids that have not been detected for a long time or                                                        IV. T HE P ROPOSED A LGORITHM
+have a high probability of target existence, a revisit pheromone                                   In this section, we first formulate the multi-UAV target
+map is designed. The DPM of UAV i at time step t is defined                                      search problem as a decentralized partially observable Markov
+as                                                                                               Decision Process (DEC-POMDP). Then, we introduce the
+                     Si,t = si,t
+                            
+                               x,y |Gx,y ∈ Z ,                (18)                               proposed HRVDN algorithm to solve it.
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                         7
+
+
+
+A. Dec-POMDP                                                                                     Algorithm 1 HRVDN algorithm
+   To address the multi-UAV target search problem with                                           Input: The number of agents n, dense reward epochs Ed ,
+MADRL, we formulate it as a DEC-POMDP, defined by the                                                sparse reward epochs Es , discount factor γ, batch size B,
+tuple (N, S, A, T, R, O, Z, γ), where:                                                               exploration rate .
+                                                                                                 Output: The trained parameters of the local networks
+   1) N : Set of Nu agents (UAVs).
+                                                                                                     {θ(1) , . . . , θ(n) }.
+   2) S: Global state space, with each agent i having a local
+                                                                                                  1: Initialize n local networks with parameters θ (1) , . . . , θ (n)
+        state si ∈ S.
+                                                                                                  2: Initialize n target networks with parameters θ̄ (i) = θ (i)
+   3) A = {A(1) , A(2) , . . . , A(Nu ) }: Joint action space,
+                                                                                                  3: Initialize dense reward training epochs Ed , sparse reward
+        where a(i) ∈ A(i) denotes agent i’s action and a =
+                                                                                                     training epochs Es
+        {a(1) , . . . , a(Nu ) } represents the joint action.
+                                                                                                  4: Initialize a shared replay buffer D
+   4) T (s0 | s, a) ∈ [0, 1]: Transition probability from state s
+                                                                                                  5: for timestep t = 0, 1, 2, . . . , Ed do
+        to s0 under joint action a.                                                                                                         (1)       (n)
+   5) R(s, a) = {r(1) , . . . , r(Nu ) }: Joint reward obtained in                                6:    Collect current observations ot , . . . , ot
+        state s after executing a.                                                                7:    for agent i = 1, . . . , n do
+                                                                                                                                                             (i)
+   6) O = {O(1) , . . . , O(Nu ) }: Joint observation space, with                                 8:       With probability : choose random action at
+        o(i) ∈ O(i) as agent i’s local observation and o =                                        9:       Otherwise: choose
+                                                                                                             (i)                      (i)
+        {o(1) , . . . , o(Nu ) } as the joint observation.                                                 at ∈ arg maxa(i) Q(ht , a(i) ; θ(i) )
+   7) Z(o(i) | s, i): Observation function mapping global state                                  10:    end for
+        s to agent i’s local observation o(i) .                                                  11:    Apply actions; collect shared reward rt and next obser-
+                                                                                                                      (1)       (n)
+   8) γ ∈ [0, 1]: Discount factor for cumulative rewards.                                               vations ot+1 , . . . , ot+1
+                                                                                                 12:    Store transition (ht , at , rt , ht+1 ) in replay buffer D
+   The objective of multi-agent reinforcement learning
+                                                                                                 13:    Sample mini-batch of B transitions (hk , ak , rk , hk+1 )
+(MADRL) is to learn a decentralized policy π =
+                                                                                                        from D
+{π (1) , . . . , π (Nu ) } that maximizes the expected cumulative
+                                                                                                 14:    if sk+1 is terminal then
+discounted reward. In this framework, each agent i selects
+                                                                                                 15:       yk ← rk
+actions based on its local observation o(i) , guided by the
+                                 (i)                                                             16:    else
+action-value function Qπ (o(i) , a(i) ), which quantifies the ex-                                                                                 (i)     0
+                                                                                                           yk ← rk + γ i∈I maxa(i)0 Q(hk+1 , a(i) ; θ̄(i) )
+                                                                                                                             P
+                                                                                                 17:
+pected cumulative reward for executing action a(i) in state o(i) .
+                                                                                                 18:    end if
+Formally:                                                                                                                    PB                       (i) (i)
+                                                                                                                                                                    2
+                                                                                                        Loss L(θ) ← B1 k=1 yk − i∈I Q(hk , ak ; θ(i) )
+                                                                                                                                            P
+                                "∞                                #                              19:
+                                       t (i)   (i)   (i) (i)                                            Update parameters θ by minimizing the loss L(θ)
+                                  X
+     (i) (i) (i)
+   Qπ (o , a ) = Eπ                   γ rt | o0 = o , a0 = a  (i)
+                                                                    .                            20:
+                                t=0                                                              21:    In a set interval, update target network parameters θ̄(i)
+                                                           (22)                                         for each agent i
+This function directly informs the policy update process,                                        22: end for
+enabling agents to choose actions that maximize long-term                                        23: Reset target network parameters
+rewards.                                                                                         24: Recalculate the rewards stored in the shared replay buffer
+   However, a critical challenge arises due to limited observ-                                       D to change the reward standards to match sparse rewards
+ability: each UAV can only access its own and neighboring                                        25: Change the subsequent reward design pattern to sparse
+agents’ observations (e.g., the local TPM), lacking full knowl-                                      rewards
+edge of the global state. This partial observability introduces                                  26: for timestep t = 0, 1, 2, . . . , Es do
+instability in MADRL training and complicates the pursuit of                                     27:    Repeat steps 6∼21
+a globally optimal policy.                                                                       28: end for
+
+
+B. HRVDN Algorithm                                                                               agent i relies on its local observation history
+                                                                                                   (i)         (i) (i) (i)         (i)    (i)    (i)
+   To solve the aforementioned problem, we propose a novel                                       ht     = {o1 , a1 , r1 , . . . , ot−1 , at−1 , rt−1 } to estimate
+MADRL algorithm named HRVDN. The architecture and                                                                                        (i) (i) (i)
+                                                                                                 the local action-value function Qπ (h , a ), and then,
+pesudocode of HRVDNis shown in Fig. 3 and Algorithm                                              Qtotal
+                                                                                                    π (s, a) can be decomposed as
+1. Next, we will introduce HRVDN from the agent network
+                                                                                                                                           Nu
+architecture, the hybrid reward mechanism and the training                                                                                 X
+process.                                                                                                           Qtotal
+                                                                                                                    π     (s, a) =               Qπ(i) (h(i) , a(i) θ(i) ),                    (24)
+   1) Agent Network Architecture: In HRVDN, the global                                                                                     i=1
+
+action-value function Qtotal
+                        π (s, a) is decomposed into the sum                                      where θ(i) represents the parameter of the deep neural network
+of individual agent contributions:                                                               used in HRVDN. This formulation ensures that the global ob-
+                                        Nu
+                                        X                                                        jective is maintained during training, while execution remains
+                  Qtotal
+                   π (s, a) =                  Q(i)    (i)
+                                                π (s, a ).                            (23)       fully decentralized. The use of local histories enables agents
+                                         i=1                                                     to implicitly encode shared environmental knowledge, even
+However, in Dec-POMDP, agents cannot access                                                      without direct access to the global state s.
+the global state s during execution. Instead, each                                                  Based on the architecture described above, the agent net-
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                                     content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                      8
+
+
+
+                                            Qptotal ( s, a )
+
+                                                                                                                          Qp( i ) ( h ( i ) , ×)   π    Qp( i ) ( h ( i ) , a ( i ) )
+
+                                                  å                                          St
+                                                                                                                              MLP
+                                                          ( Na )
+                   Qp(1) (h (1) , a (1) )       Qp              (h( Na ) , a ( Na ) )    Agent ht(-i )1                                                 ht( i )
+                                                                                                                              GRU
+                                                                                           network
+                        Agent                               Agent                       structure                          MLP
+
+                     (ot(1) , at(1)-1 )                 (ot( Na ) , at(-N1a ) )                                            (ot( i ) , at( i ) )
+
+                                Training structure                                                        Recalculate
+
+                                                           Dense rewards                                                                           Sparse rewards
+
+                          Env                                           Buffer                                                                            Buffer
+                                                                                                                     Env
+                                Action                    Update                                  Reset                     action                 update
+
+
+                       Policy                                           Policy                                    Policy                                   Policy
+
+
+                                                                                                                                                   Learning process
+Fig. 3. The training process and agent network architecture of HRVDN.
+
+
+
+work within the HRVDN framework is a recurrent structure                                               a key transition occurs: the reward function is switched to a
+designed to process local observations and generate action-                                            sparse form which only depends on the objective fuction of
+values. It is composed of two Multi-Layer Perceptrons (MLPs)                                           the cooperative search problem, and a "hard reset" of the target
+and a Gated Recurrent Unit (GRU) operating in sequence.                                                network parameters is executed. This reset randomizes the
+The process begins with the agent’s current local observation                                          target network to eliminate the primacy bias introduced by the
+and its previous action as inputs to the initial MLP. The MLP                                          early-stage dense reward shaping. Although this approach may
+serves as a feature encoder, transforming the high-dimensional,                                        induce a temporary performance drop, the replay buffer can
+heterogeneous observation data into a more compact feature                                             be seen as a non-parametric model of the world [38], allowing
+representation. This feature vector is then passed to the GRU,                                         the agent to quickly recover from brief online interactions
+which functions as the network’s core memory module. To                                                and normal off-policy policy updates. The high-value sparse
+address the partial observability inherent in the DEC-POMDP                                            reward samples can greatly increase performance beyond the
+environment, the GRU integrates this new information with                                              previous dense reward samples after mitigating the primacy
+its previous hidden state to produce an updated, history-                                              bias. This reset-and-refine process is effectively a mechanism
+aware hidden state. This leads to more effective and stable                                            to escape the local optima inherent in dense reward shaping.
+decisions in such a partially observable setting. Finally, this                                           Stage 3: The rewards for all historical samples in the experi-
+comprehensive hidden state is passed to a second MLP that                                              ence pool are recalculated, keeping the original state and action
+acts as a Q-value head, mapping the state representation to a                                          data but replacing the rewards with those under the sparse
+vector of action-values.                                                                               reward function to avoid interference from old reward signals.
+   2) Hybrid Reward Mechanism: HRVDN adopts a hybrid                                                   Subsequent training continues to optimize based on the reset
+reward design to accelerate the training process and improve                                           network and updated experience pool, utilizing the robustness
+the overall performance. The reward approach used is divided                                           of sparse rewards to break through the local optimum of dense
+into three stages:                                                                                     rewards and ultimately converge to the global optimum policy.
+   Stage 1: During the early training phase, a non-global                                                 3) Training process: As shown in Algorithm 1, the training
+optimal but dense reward function is employed to guide the                                             process begins by initializing local networks, target networks,
+agent in exploring the environment and accumulating high-                                              and a shared replay buffer. In the first phase, agents train for
+value experience samples. This provides rich intermediate                                              a set number of epochs Ed using a dense reward function,
+feedback to facilitate learning.                                                                       selecting actions based on an epsilon-greedy policy and storing
+   Stage 2: At a preset training epoch (e.g., the 600th epoch),                                        the collected transitions in the replay buffer. The networks are
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                             but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                         9
+
+
+
+updated by minimizing the temporal difference loss on mini-                                         To ensure cooperative behavior among UAVs, the HRVDN
+batches sampled from this buffer. After this phase, the algo-                                    algorithm employs both explicit information fusion and im-
+rithm executes hard reset by re-initializing the target network                                  plicit coordination mechanisms. The primary form of direct
+parameters and recalculates all rewards for the experiences in                                   interaction is communication-based information fusion. Each
+the replay buffer using a new, sparse reward standard. The                                       UAV shares its positive N (+) and negative N (−) detection
+algorithm then enters its second phase, continuing the training                                  count maps with neighboring UAVs within its communication
+process for an additional Es epochs with the sparse reward                                       range. Upon receiving this information, an agent updates its
+function, leveraging the updated buffer and reset network to                                     own maps by taking the element-wise maximum between its
+refine the policy.                                                                               current knowledge and that of its neighbors. This ensures
+   While a formal mathematical proof of convergence for                                          that discoveries or cleared areas reported by one UAV are
+a complex deep MADRL system like HRVDN is beyond                                                 immediately incorporated into the beliefs and path planning of
+the scope of this paper, the proposed algorithm incorporates                                     its peers, reducing redundant searches and fostering collective
+multiple techniques to promote training stability. These in-                                     intelligence.
+clude standard approaches such as target networks, experience                                       In addition to direct interaction, UAVs coordinate indirectly
+replay, and gradient clipping, augmented by our specific opera-                                  through stigmergy by updating shared environmental represen-
+tions of reset-and-refine mechanism. The effectiveness of these                                  tations, such as the Digital Pheromone Map (DPM) and Search
+combined mechanisms is validated through the simulation                                          Time Map (STM). These maps help avoid collisions and guide
+experiments presented in subsequent sections.                                                    other agents toward high-value or unexplored regions, further
+                                                                                                 enhancing coordination and search efficiency.
+C. Action and Observation of UAV Swarm
+  1) Observation Space: Each UAV in the multi-UAV system                                         D. Reward Design
+maintains local observation information of the task area and                                         The reward function consists of the following six parts:
+makes fully distributed decisions for its next action. In our                                                                     1
+                                                                                                     1) Target discovery reward ri,t : This component accounts
+model, the observation field is a circle whose radius is directly                                       for task progress by providing a significant positive
+determined by the UAV’s current, discrete altitude layer. We                                            reward upon the detection of a new target. The reward is
+have a predefined set of altitude layers, each with a corre-                                            defined as a fixed bonus r1 minus the current timestep,
+sponding, distinct sensing radius (e.g., a larger radius for a                                          which can be formulated as
+higher altitude, and vice-versa).                                                                                                     Nu X  Ly
+                                                                                                                                         Lx X
+  At each timestep t, UAV i extracts local cognitive infor-                                                                  1
+                                                                                                                            ri,t =
+                                                                                                                                      X
+                                                                                                                                                         (r1 − t)pi,t     .                    (26)
+                                                                                                                                                                  x,y >ξp
+mation as input to its policy network. The observation oi,t is                                                                        i=1 x=1 y=1
+defined as
+                                                                                                                                         2
+                 oi,t = (pi,t , phi,t , fi,t , posi,t ),     (25)                                    2) Time consumption penalty ri,t      : This component ac-
+                                                                                                        counts for mission efficiency by applying a small,
+where                                                                                                   constant negative reward (-1) at every timestep. This
+   • pi,t is the target probability distribution information ex-                                        incentivizes the swarm to complete the search task in
+      tracted from the TPM, assuming that pi,t outside the                                              the minimum possible time.
+                                                                                                                               3
+      observation field is 0;                                                                        3) Collision penalty ri,t   : This component accounts for
+   • phi,t is the digital pheromone map information extracted                                           safety and spatial coordination. It imposes a negative
+      from the DPM, assuming that the pheromone outside the                                             penalty, r2 , for collisions between UAVs and a penalty,
+      observation field is 0;                                                                           r3 , for collisions between UAVs and threats. The total
+   • fi,t is extracted from the STM, assuming that the grid                                             collision penalty is expressed as
+      search time outside the observation site is 0;                                                                              u −1
+                                                                                                                                 NP          N
+                                                                                                                                             Pu
+   • posi,t is the location map combining the positions of                                                           3
+                                                                                                                    ri,t =                          r2kui,t −uj.t k<RU min
+      neighbor UAVs and locally observed obstacles. Assume                                                                         i=1 j=i+1
+                                                                                                                                     N  Ne
+                                                                                                                                                                                               (27)
+      that the value outside the observation field is 0, which                                                                       Pu P
+                                                                                                                                 +                r3kui,t −ek.t k<RE min .
+      means there are no UAVs and no obstacles.                                                                                      i=1 k=1
+
+   2) Action design: Given that RL policies are more ef-                                             4) Uncertainty reduction reward ri,t 4
+                                                                                                                                             : This component ac-
+ficiently learned in large one-dimensional action spaces                                                counts for information gain by rewarding actions that
+than in small multi-dimensional ones, we convert the                                                    reduce the overall entropy of the TPM. Let the en-
+two-dimensional action space (horizontal aH and vertical                                                tropy of the grid Gx,y be Jx,y   i,t
+                                                                                                                                               = −pi,t        i,t
+                                                                                                                                                     x,y log px,y −
+aV ) into a one-dimensional discrete space via permuta-                                                       i,t            i,t
+                                                                                                        (1 − px,y ) log(1 − px,y ). Then, the reward for reducing
+tion and combination. By combining aH ∈ {0, 1, 2, 3}                                                    environmental uncertainty can be expressed as
+and aV       ∈ {0, 1, 2}, we generate 12 possible ac-
+                                                                                                                                              Ly
+                                                                                                                                           Lx X
+tions: {(0, 0), (1, 0), (2, 0), (3, 0), (0, 1), . . . , (3, 2)}. Further-                                                     4
+                                                                                                                                           X
+                                                                                                                                                          i,t−1    i,t
+more, any action that would cause the UAV to exceed the task                                                                 ri,t = r4                  (Jx,y   − Jx,y ),                      (28)
+                                                                                                                                           x=1 y=1
+area is excluded from the candidate actions in the subsequent
+timestep.                                                                                                 where r4 is a positive coefficient.
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                       This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                                   content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                          10
+
+
+
+                                   5
+  5) Revisit pheromone reward ri,t   : This component accounts                                                                            TABLE II
+     for both exploitation and strategic re-exploration. It                                                                      E XPERIMENTAL PARAMETERS
+     provides a reward for visiting grid cells with a high                                                                 Parameters                                       Value
+     target probability (exploitation) and for visiting cells that                                              Communication range( dc )                                      5
+     have not been observed for a long time (re-exploration),                                                 Maximum turning angle( θv )                                    π/4
+                                                                                                            Initial target existence probability                              0.5
+     thereby accelerating the search process. The reward is                                                      Initial digital pheromone                                     0
+     expressed as                                                                                              Revisit time threshold( T0 )                                    5
+                                                                                                             Probability increment unit( p∆ )                                 0.5
+                                              Nu X  Ly
+                                                 Lx X                                                         Target revisit threshold( ζP )                                 0.75
+                                              X
+                               5
+                              ri,t = r5                         si,t
+                                                                 x,y ,                   (29)                Target existence threshold( ξP )                                0.99
+                                                                                                         Pheromone evaporation coefficient( Ea )                             0.45
+                                              i=1 x=1 y=1
+                                                                                                         Pheromone propagation coefficient( Ga )                              0.3
+     where r5 is a positive coefficient.                                                                   Pheromone release coefficient(Da )                                  2
+                          6                                                                              Safe distance from neighbors( RU min )                                1
+  6) Coverage reward ri,t   : This component accounts for                                                  Safe distance from threats( RE min )                                2
+     exploration breadth. It provides a normalized reward                                                           Range of FOV( L0 )                                        11
+     for visiting new, previously uncovered grid cells, which                                                        Training buffer size                                    900
+                                                                                                                     Training batch size                                      20
+     prevents the swarm from prematurely converging on                                                          Gradient clipping threshold                                   10
+     known areas and potentially missing targets elsewhere.                                                           Number of neuron                                        96
+     The reward is normalized as follows                                                                   HRVDN Dense reward epochs(Ed )                                    600
+                                                                                                           HRVDN Sparse reward epochs(Ed )                                  2800
+                             Nu X  Ly
+                                Lx X                                                                             r1 , r2 , r3 , r4 , r5 , r6 , r7                 15, -1, -5, 0.5, 0.1, 1, 5
+                             X
+              6
+             ri,t = r6                           1εi,t
+                                                   x,y >0
+                                                          /(Lx × Ly ),                   (30)
+                             i=1 x=1 y=1
+                                                                                                                                   TABLE III
+     where r6 is a positive coefficient.                                                               I MPACT OF P ROBABILITY I NCREMENT AND R EVISIT T HRESHOLD ON
+                                     7                                                                                        E PISODE R EWARD
+  7) Energy consumption penalty ri,t    : This component ac-
+     counts for energy saving. It applies a small negative nor-                                      Probability                              Revisit threshold
+                                                                                                                                                                                               Mean
+     malized reward whenever a UAV that is not locked onto                                           increment           0.6        0.65        0.7      0.75    0.8   0.85
+                                                                                                        0.06            52.43      75.30       82.39     43.24   3.45 91.52                     58.06
+     a target makes a horizontal turn or changes direction.                                             0.09           105.18      87.84      122.03 93.68 129.06 90.36                        104.69
+     Since turning maneuvers consume more energy, this                                                  0.12            70.98      62.25      122.29 71.52 106.15 85.73                         86.49
+     penalty encourages UAVs to avoid unnecessary turns,                                                0.15           144.07     151.94      106.25 92.65 162.41 121.64                       129.83
+                                                                                                        0.18           137.15     104.24      141.71 106.83 95.90     92.66                    113.08
+     thereby reducing energy consumption and improving                                                  0.21            67.49      83.23      111.71 110.38 47.38     32.73                     75.49
+     mission endurance.                                                                                Mean             96.22      94.13      114.40 86.38      90.73 85.77                      ∼
+                              Nu
+                              X
+               7
+              ri,t =−               r7 a(i)       (i)    i,t           /Nu ,             (31)                                      TABLE IV
+                                         H,t−1 6=aH,t , px,y ≤ξp
+                              i=1                                                                      I MPACT OF L EARNING R ATE B EFORE AND A FTER R EWARD S HIFT ON
+                                                                                                                               E PISODE R EWARD
+                 (i)                  (i)
+      where aH,t−1 and aH,t are the horizontal actions of an
+                                                                                                               Sparse                   Dense learning rate
+      agent at previous and current timestep, respectively. r7                                              learning rate       0.0005 0.001 0.002 0.005 0.01
+                                                                                                                                                                                       Mean
+      is a positive coefficient.                                                                               0.0005           64.80 67.03 55.60 33.06 55.20                          55.14
+                                       d                                                                        0.001           30.87 -10.67 36.93 71.03 62.73                         38.18
+   For the dense reward function ri,t    , its value is the sum of                                              0.002            8.73  30.79 52.86 42.46 49.57                         36.88
+                                                       s
+above rewards; for the sparse reward function ri,t         , only the                                           0.005           44.43 47.26 53.96 62.83 45.80                          50.86
+target discovery reward and collision penalty are summed,                                                        0.01            -1.00 33.03 1.56 36.43 -17.46                         10.51
+                                                                                                                Mean            29.57 33.49 40.18 49.16 39.17                           ∼
+while other types of rewards are ignored. In summary, the
+whole reward function of HRVDN is as follows
+    d        1      2      3      4      5      6       7                                             Targets follow the Gauss-Markov model: initial positions
+      ri,t = ri,t + ri,t + ri,t + ri,t + ri,t + ri,t + ri,t
+       s      1      3                                        . (32)                                are random within the task area, speed is 0.2 grids/timestep,
+      ri,t = ri,t + ri,t
+                                                                                                    direction θ ∼ U(0, 2π), and random coefficient α = 0.5.
+                                                                                                    Additional simulation parameters can be found in Table II.
+                               V. E XPERIMENTS
+A. Setting Up
+                                                                                                    B. Hyperparameters Analysis
+   A multi-UAV system is evaluated in a simulated environ-
+ment for detecting moving targets under dynamic threats.                                               In deep reinforcement learning, the selection of parameters
+Experiments are conducted on a Ubuntu 20.04 server with                                             significantly influence the algorithm’s performance and effi-
+an Intel i7-13650HX CPU and 32 GB RAM.                                                              ciency. Next, multiple controlled experiments are conducted to
+   The HRVDN algorithm is implemented using PyTorch and                                             find appropriate hyperparameters for HRVDN. The probability
+Python 3.8. Standardizing each grid’s length to 1, UAVs move                                        increment, revisit threshold, and learning rate were selected
+one grid per timestep, threats move one grid every three                                            for analysis, using the mean episodic reward as the primary
+timesteps. The flight altitude is discretized into three layers,                                    evaluation metric. All experiments were conducted in a 20 ×
+z = {0, 1, 2}, with corresponding PD = [0.94, 0.82, 0.7],                                           20 grid environment containing 10 UAVs, 10 targets, and 3
+PF = [0.05, 0.18, 0.3], and the sensing radii Rsense = [1, 2, 3].                                   threats. Other parameters are the same as Table II.
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                       © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                            but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                                            This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                                                                  content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                                              11
+
+
+
+                                                                                                                                               UAV cooperative target search, we compared its performance
+                                                                                                                                               against a conventional fixed-altitude method in terms of search
+                                                                                                                                               rate and the number of collisions. As shown in Fig. 4(a),
+                                                                                                                                               the search rate (defined as the ratio of the number of dis-
+                                                                                                                                               covered targets to the total number of targets) of the hier-
+                                                                                                                                               archical altitude-adaptive algorithm was significantly higher
+                                                                                                                                               than that of the fixed-altitude strategy. This demonstrates
+                                                                                                                                               that the HRVDN algorithm effectively leverages the sensor
+                                                                                                                                               characteristics at different altitude layers. At higher altitudes,
+                                                                                                                                               UAVs utilize larger sensing radii for coarse, wide-area recon-
+                                         (a)                                                                    (b)
+                                                                                                                                               naissance to rapidly identify regions of interest. Subsequently,
+Fig. 4. Model performance of the HRVDN algorithm under fixed altitude and                                                                      at lower altitudes, they employ higher detection probabilities
+altitude-adaptive conditions with variable number of UAVs. (a) Search rate.
+(b) Number of collisions.                                                                                                                      for precise, fine-grained search, thereby capturing dynamic
+                                                                                                                                               targets more effectively. This multilayered search strategy
+                                                                                                                                               ensures both the breadth of exploration and the accuracy of
+                            6
+                                                           1 Layer
+                                                                                                 1000
+                                                                                                                                1 Layer
+                                                                                                                                               target detection. Furthermore, Fig. 4(b) illustrates that as the
+                                                                                                                                               number of UAVs increases, the advantage of altitude-adaptive
+  Number of targets found
+
+
+
+
+                            5                              3 Layers                                                             3 Layers
+                                                                                                  800
+                                                                          Number of collisions
+
+
+
+
+                                                           5 Layers                                                             5 Layers
+                            4                                                                                                                  to avoid collisions becomes even more pronounced.
+                                                                                                  600
+                            3                                                                                                                     Next, we investigated the effect of discrete altitude layers
+                            2
+                                                                                                  400                                          (L) on policy learning in a 30 × 30 grid environment contain-
+                            1                                                                     200                                          ing 10 UAVs, 10 targets, and 3 threats. Three configurations
+                                                                                                                                               were tested:
+                            0                                                                      0
+                                0   1        2         3              4                                 0   1        2      3              4      • L = 1: Rsense = 1, PF = 0.06, PD = 0.94
+                                          Episode                1e3                                              Episode             1e3
+                                                                                                                                                  • L = 3: Rsense = [1, 2, 3], PF = [0.06, 0.18, 0.3], PD =
+                                         (a)                                                                    (b)
+                                                                                                                                                     [0.94, 0.82, 0.7]
+Fig. 5. Convergence performance of the HRVDN algorithm with different                                                                             • L = 5: Rsense = [1, 2, 3, 4, 5], PF = [0.06, 0.18, 0.3,
+numbers of altitude layers during the training process. (a) Number of targets
+found. (b) Number of collisions.                                                                                                                     0.42, 0.48], PD = [0.94, 0.82, 0.7, 0.58, 0.52]
+                                                                                                                                               As shown in Fig. 5, the 3-layer configuration achieved a sig-
+   As observed in Table III, when the probability increment                                                                                    nificantly higher search rate and lower collision rate than the
+increases from 0.06 to 0.21, the overall trend of the episodic                                                                                 other two cases. This suggests that while altitude adaptation
+reward is first rising and then falling. A moderate increase                                                                                   (as in the 3-layer model) clearly outperforms the single-layer
+in the probability increment can enable the probability map                                                                                    case, an excessive number of layers (i.e., the 5-layer scenario)
+to more accurately reflect the distribution of dynamic targets.                                                                                can hinder the network from converging to an optimal policy,
+However, an excessively large increment introduces too much                                                                                    likely due to the increased complexity of the action space and
+uncertainty, thereby reducing the reward. Similarly, as the                                                                                    the trade-off between search range and sensor performance.
+revisit threshold increases from 0.6 to 0.85, the reward exhibits                                                                                 In summary, the hierarchical altitude-adaptive method pro-
+a similar trend of rising then falling. A lower revisit threshold                                                                              vides significant advantages in enhancing search efficiency and
+enhances the ability to capture moving targets, but an overly                                                                                  flight safety, demonstrating greater adaptability and robustness
+low value can lead to resource wastage.                                                                                                        in large-scale UAV swarm cooperative search tasks.
+   Table IV shows our analysis of different learning rates for                                                                                    2) Impact of Revisit Compensation Mechanism: We ana-
+the dense and sparse reward phases of the HRVDN algorithm.                                                                                     lyze the effect of revisit compensation mechanism on UAV
+Here, we use the reward function from the sparse phase to                                                                                      search performance. As shown in Fig. 6, the introduction of
+measure the average episode reward. During the dense phase,                                                                                    this mechanism significantly increased the number of dynamic
+a higher learning rate yields a better overall reward; while                                                                                   targets captured by the swarm, while notably decreasing the
+in the sparse phase, a lower learning rate is optimal. This                                                                                    detection error rate. This indicates that the revisit time com-
+is because, in the dense phase, the model needs to explore                                                                                     pensation mechanism optimizes revisit strategies by reducing
+the environment as much as possible to accumulate sufficient                                                                                   redundant area searches while increasing visits to high-value
+diverse, high-value samples for the sparse phase. Therefore,                                                                                   regions, thereby improving dynamic target acquisition.
+a higher learning rate is beneficial for the final learning                                                                                       3) Impact of Energy Saving Mechanism: In this part, we
+outcome. In the sparse phase, the model’s training is more                                                                                     analyze how the energy consumption penalty affects both
+sample-efficient but can be less robust. Thus, a lower learning                                                                                energy usage and search rate during the UAV swarm’s search
+rate helps to maintain a steady improvement in performance,                                                                                    process. We investigated the total energy consumption of UAV
+reducing oscillations and the risk of overfitting.                                                                                             swarms of different sizes in a 20 × 20 grid environment
+                                                                                                                                               containing 10 targets and 5 threats. To highlight the differ-
+                                                                                                                                               ence, We assume that each UAV that is not locked onto a
+C. Performance Analysis                                                                                                                        target consumes 2 energy units per step when its horizontal
+  1) Impact of Altitude-adaptive Algorithm: To validate the                                                                                    direction remains unchanged, and 5 energy units per step if the
+benefits of the hierarchical altitude-adaptive algorithm for                                                                                   horizontal direction changes. As shown in Fig. 7, introducing
+
+                            Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                                            © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                                                 but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                                                      This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                                                                                 content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                                                                   12
+
+
+
+                                                                                                                                                                              a target is captured, the UAV initiates one-to-one tracking;
+                            7                                                                                                                                                 otherwise, it returns to a higher layer to repeat the process.
+                                                                                                                    0.6
+  Number of targets found
+
+
+
+
+                            6                                                                                       0.5
+
+                                                                                                                                                                              D. Comparison with Existing Algorithms
+
+
+
+
+                                                                                         Error rate
+                            5                                                                                       0.4
+                                                                                                                                             HRVDN without compensation
+                                                                                                                    0.3                      HRVDN with compensation
+                            4                                                                                                                                                    1) Comparison with RL-based Algorithms: In this subsec-
+                                                                                                                    0.2
+                            3                                                                                                                                                 tion, we evaluate the performance of HRVDN against sev-
+                                                     HRVDN without compensation                                     0.1
+                            2                        HRVDN with compensation                                                                                                  eral RL-based algorithms. Fig. 11 compares the convergence
+                                                                                                                    0.0
+                                0      1         2             3      4           5                                       0       1         2             3   4           5   performance of HRVDN with the Dense-to-Sparse enhanced
+                                                     Episode                 1e3                                                                Episode              1e3
+                                                                                                                                                                              QMIX, QTranAlt, and REINFORCE algorithms. The RE-
+                                                 (a)                                                                                       (b)                                INFORCE algorithm, a foundational policy gradient method
+Fig. 6. Convergence performance of the HRVDN algorithm with and without                                                                                                       where each agent learns independently, serves as a benchmark
+revisit compensation during training process. (a) Number of targets found. (b)                                                                                                for non-cooperative learning. QMIX and QTranAlt represent
+Error rate.
+                                                                                                                                                                              state-of-the-art value-based MADRL algorithms. QMIX uses
+                                                                                                                                                                              a mixing network to form a joint action-value function, while
+                                                                                                                                                                              QTranAlt employs a more general transformation that relaxes
+                                      HRVDN with energy saving                                                                        HRVDN with energy saving
+                                                                                                                                                                              the strict monotonicity constraint of QMIX.
+                                                                                      Total energy units consumed
+
+
+
+
+                            8                                                                                       10000
+  Number of targets found
+
+
+
+
+                                      HRVDN without energy saving                                                                     HRVDN without energy saving
+
+                                                                                                                     8000
+                                                                                                                                                                                 As shown in the figures, HRVDN outperforms the other
+                            6
+                                                                                                                     6000
+                                                                                                                                                                              three algorithms in both convergence speed and the final
+                            4                                                                                                                                                 number of targets found, discovering approximately 5 tar-
+                                                                                                                     4000
+                                                                                                                                                                              gets on average, whereas the baselines find only about 2.
+                            2                                                                                        2000
+                                                                                                                                                                              Regarding collision occurrences, HRVDN’s collision count
+                                           5       10        15              20
+                                                                                                                              0
+                                                                                                                                       5       10       15           20
+                                                                                                                                                                              rapidly converges to a low value, while the average for the
+                                               Number of UAVs                                                                              Number of UAVs                     other algorithms remains above 400, indicating they fail to
+                                                 (a)                                                                                       (b)                                learn effective collision avoidance strategies. In terms of map
+Fig. 7. Performance comparison of the HRVDN algorithm with and without
+                                                                                                                                                                              coverage, HRVDN consistently maintains a rate between 80%
+energy saving mechanisms under different numbers of UAVs. (a) Number of                                                                                                       and 90%, while the other models exhibit lower or less stable
+targets found. (b) Total Energy units consumed.                                                                                                                               performance. Furthermore, when analyzing the normalized
+                                                                                                                                                                              reward, HRVDN demonstrates significantly faster convergence
+the energy consumption penalty significantly reduces energy                                                                                                                   towards the optimal policy. To measure the model convergence
+lost due to turning, while the number of detected targets is                                                                                                                  speed at the reward level, we normalized the reward values
+almost unaffected. This indicates that, by incorporating an                                                                                                                   in both the earlier and later parts according to the maximum
+energy-consumption penalty, the proposed method effectively                                                                                                                   values of dense and sparse rewards. As shown in the figure,
+encourages the UAV swarm to adopt energy-saving and effi-                                                                                                                     HRVDN rapidly achieved an average reward close to 0,
+cient search strategies.                                                                                                                                                      outperforming the other three models.
+   4) Impact of Hybrid Reward Design: To evaluate the hybrid                                                                                                                     Actually, in the scenario of cooperative search for moving
+reward scheme, we compared the performance of HRVDN                                                                                                                           targets by UAV swarms, there are no complex cooperative
+under dense, sparse, and the proposed hybrid reward schemes                                                                                                                   or competitive relationships between UAVs, limiting the ef-
+respectively. Fig. 8 and Fig. 9 compare the convergence                                                                                                                       fectiveness of fitting a global Q-value using neural networks.
+performance of HRVDN under the three different schemes                                                                                                                        Overall, the Reinforce algorithm performs poorly across all
+throughout training across two experimental settings (10 and                                                                                                                  evaluation metrics, while the performance of QTranAlt and
+15 targets, respectively). As the plots show, although the                                                                                                                    QMIX is also suboptimal. In contrast, the HRVDN algorithm
+hybrid-reward version of HRVDN experiences initial perfor-                                                                                                                    guides the UAV swarm to learn effective cooperative strategies
+mance degradation due to parameter reset, it rapidly recovers                                                                                                                 through a global action-value function and a reward function
+via high-quality experience replay and surpasses sparse/dense-                                                                                                                incorporating global information. This alleviates the non-
+only variants, ultimately achieving faster convergence and                                                                                                                    stationarity issue in multi-agent reinforcement learning and
+overall higher performance in terms of search rate and cov-                                                                                                                   demonstrates good scalability and cooperative effectiveness in
+erage rate. With respect to collision avoidance, the hybrid-                                                                                                                  large-scale environments.
+reward version of HRVDN initially incurs more collisions                                                                                                                         2) Comparison with Traditional Search Methods: To fur-
+but eventually converges to collision rate comparable to other                                                                                                                ther validate HRVDN’s effectiveness, we conducted compar-
+methods. These results validate that the HRVDN algorithm                                                                                                                      ative experiments against three traditional search methods:
+effectively balances convergence effience and stability.                                                                                                                      the Ant Colony Optimization (ACO) algorithm, the Random
+   5) Search Strategy Visualization: Finally, the learned search                                                                                                              Search algorithm, and the Greedy Search algorithm. These
+strategy is demonstrated in Fig. 10, which displays the TPM                                                                                                                   experiments were performed in a 30 × 30 grid environment
+of the trained model at different timesteps. The UAV swarm                                                                                                                    with 20 targets and 10 threats. The configuration details of the
+first conducts a broad search from higher altitudes. After                                                                                                                    baseline algorithms are as follows:
+fusing information, UAVs identifying high-probability regions                                                                                                                    • Ant Colony Optimization (ACO): A heuristic inspired by
+descend to lower altitudes for a precise, focused search. If                                                                                                                        ant foraging. At each timestep, UAVs select actions based
+
+                                Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                                                      © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                                                             but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                                          This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                                                     content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                                            13
+
+
+
+
+                                  6                                                                                                                                          1000
+                                                                                                         90%                                                                                             Dense
+                                  5                                                                                                                                                                      Sparse
+                                                                                                                                                                              800
+        Number of targets found
+
+                                                                                                                                                                                                         HRVDN
+
+
+
+
+                                                                                                                                                      Number of collisions
+                                  4                                                                      80%
+
+
+
+
+                                                                                         Coverage rate
+                                                                                                                                                                              600
+                                  3
+                                                                                                         70%
+                                                                                                                                                                              400
+                                  2
+                                                                           Dense                         60%                            Dense
+                                                                                                                                                                              200
+                                  1                                        Sparse                                                       Sparse
+                                                                           HRVDN                                                        HRVDN
+                                  0                                                                      50%                                                                    0
+                                      0        1                 2            3                                0   1               2       3                                        0   1            2     3
+                                                       Episode                    1e3                                    Episode               1e3                                            Episode          1e3
+
+                                                     (a)                                                               (b)                                                                  (c)
+Fig. 8. Convergence performance of HRVDN with pure dense reward, pure sparse reward, and hybrid rewards during the training process in a 20 × 20 grid
+environment containing 10 UAVs, 10 targets, and 5 threats. (a) Number of targets found. (b) Coverage rate. (c) Number of collisions.
+
+
+
+                                  8                                                                                                                                          1000
+                                                                                                         90%                                                                                             Dense
+                                  7                                                                                                                                                                      Sparse
+                                                                                                                                                                              800
+        Number of targets found
+
+
+
+
+                                                                                                                                                                                                         HRVDN
+
+
+
+
+                                                                                                                                                      Number of collisions
+                                  6
+                                                                                                         80%
+                                                                                         Coverage rate
+
+
+
+
+                                  5                                                                                                                                           600
+
+                                  4                                                                      70%
+                                                                                                                                                                              400
+                                  3
+                                                                           Dense                         60%                            Dense
+                                                                                                                                                                              200
+                                  2                                        Sparse                                                       Sparse
+                                                                           HRVDN                                                        HRVDN
+                                  1                                                                      50%                                                                    0
+                                      0        1                 2            3                                0   1               2       3                                        0   1            2     3
+                                                       Episode                    1e3                                    Episode               1e3                                            Episode          1e3
+
+                                                     (a)                                                               (b)                                                                  (c)
+Fig. 9. Convergence performance of HRVDN with pure dense reward, pure sparse reward, and hybrid rewards during the training process in a 20 × 20 grid
+environment containing 10 UAVs, 15 targets, and 5 threats. (a) Number of targets found. (b) Coverage rate. (c) Number of collisions.
+
+
+
+    on a combination of pheromone maps, target probability                                                                   fusion, revisit compensation, and hybrid reward mechanisms.
+    maps, and other heuristic information.                                                                                      In summary, HRVDN successfully integrates a hierarchi-
+  • Random Search: A simple baseline where UAVs ran-                                                                         cal search strategy—using different altitudes for coarse and
+    domly select a valid action from the set of horizontal                                                                   precise searches—with robust safety and cooperation mech-
+    and vertical options at each timestep.                                                                                   anisms. The convergence analysis and comparative results
+  • Greedy Search: A deterministic strategy where UAVs al-                                                                   validate that our proposed algorithm not only outperforms
+    ways select the horizontal action that moves them toward                                                                 traditional heuristic methods but also shows superior perfor-
+    the adjacent grid cell with the highest target probability.                                                              mance within the MADRL framework, thus confirming the
+    The vertical action is chosen randomly.                                                                                  effectiveness of the HRVDN approach.
+   According Fig. 12(a) and Fig. 12(b), HRVDN consistently
+achieves the highest search rate across all tested fleet sizes.                                                                                                              VI. C ONCLUSION
+It is followed by the Greedy and ACO algorithms, which                                                                          This paper addresses the challenge of multi-UAV coop-
+exhibit only a slight performance gap; the Random algorithm                                                                  erative search for moving targets in large-scale, complex
+performs worst throughout. These findings clearly demonstrate                                                                environments. The primary aim is to mitigate the unreliability
+that HRVDN is more effective at leveraging environmental                                                                     of cognitive maps caused by target mobility.To solve this
+information for dynamic target search.                                                                                       problem, we formulate the search task as a Decentralized
+   Fig. 12(c) reveals that HRVDN yields the fewest collisions.                                                               Partially Observable Markov Decision Process (Dec-POMDP)
+Notably, for fleet sizes below 20 UAVs, HRVDN experiences                                                                    and introduce a novel Multi-Agent Deep Reinforcement Learn-
+virtually no collisions. This superior performance is attributed                                                             ing (MADRL) algorithm, named HRVDN. Our approach fea-
+to HRVDN’s integration of collision penalties into reward                                                                    tures a hierarchical search model that leverages different flight
+function and its use of a hierarchical altitude mechanism for                                                                altitudes to balance search breadth and precision. Extensive ex-
+spatial deconfliction. Furthermore, as shown in Fig. 12(d), the                                                              periments demonstrate that HRVDN significantly outperforms
+average step reward for HRVDN remains stable as the number                                                                   both traditional and baseline MADRL approaches in terms
+of UAVs increases, whereas the performance of the other                                                                      of search efficiency and scalability. Further ablation studies
+algorithms degrades. This suggests that HRVDN effectively                                                                    validate the effectiveness of our proposed hybrid reward design
+enhances swarm cooperation efficiency through its information                                                                and altitude-adaptive strategy.
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                                          © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                                             but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                                                                 This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                                                                                                  content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                                                                                                                                                                14
+
+
+
+
+                                                                                                                                                                                                                                                                                                      0.8       HRVDN
+                                                                                                                                                                                                                                 0.5                                                                            ACO
+                                                                                                                                                                                                                                                                                                                Random
+                                                                                                                                                                                                                                 0.4                                                                  0.6       Greedy
+
+
+
+
+                                                                                                                                                                                                                                                                                Search rate
+                                                                                                                                                                                                          Search rate
+                                                                                                                                                                                                                                 0.3
+                                                                                                                                                                                                                                                                                                      0.4
+                                                                                                                                                                                                                                 0.2                                  HRVDN
+                                                                                                                                                                                                                                                                      ACO                             0.2
+                                                                                                                                                                                                                                 0.1                                  Random
+                                                                                                                                                                                                                                                                      Greedy
+                                                                                                                                                                                                                                 0.0                                                                  0.0
+                                                                                                                                                                                                                                           0   50        100    150       200                               0    10         20      30   40
+                                              Timestep = 0                                                                                            Timestep = 20                                                                                     Steps                                                          Number of UAVs
+
+                                                                                                                                                                                                                                                    (a)                                                                  (b)
+
+                                                                                                                                                                                                                                 1000          HRVDN                                                    0
+                                                                                                                                                                                                                                               ACO
+
+
+
+
+                                                                                                                                                                                                          Number of collisions
+
+
+
+
+                                                                                                                                                                                                                                                                                Average step reward
+                                                                                                                                                                                                                                  800          Random
+                                                                                                                                                                                                                                               Greedy                                                  -5
+                                                                                                                                                                                                                                  600
+
+                                                                                                                                                                                                                                  400                                                                 -10       HRVDN
+                                                                                                                                                                                                                                                                                                                ACO
+                                                                                                                                                                                                                                  200
+                                                                                                                                                                                                                                                                                                                Random
+                                                                                                                                                                                                                                                                                                      -15       Greedy
+                                                                                                                                                                                                                                       0
+                                             Timestep = 40                                                                                           Timestep = 140                                                                        0    10     20      30         40                                0     10        20      30   40
+                                                                                                                                                                                                                                                  Number of UAVs                                                       Number of UAVs
+                                                    UAV (Height=1)                     UAV (Height=2)                                                  UAV (Height=3)
+                                                                                                                                                                                                                                                    (c)                                                                  (d)
+                                                                           Target                                                                 Threat
+                                                                                                                                                                                                        Fig. 12. Performance comparison of HRVDN, ACO, Random, and Greedy
+                                                                                                                                                                                                        algorithms under different situations and metrics. (a) Search rate versus steps.
+Fig. 10. Global target probability map at different timesteps in an execution                                                                                                                           (b) Search rate versus number of UAVs. (c) Number of collisions. (d) Average
+process of HRVDN algorithm.                                                                                                                                                                             step reward.
+
+                                                                                                                                                                                                        investigate more sophisticated target motion models and UAV
+                                                                                                                                                                                                        velocity models to better capture the complexities and physical
+                            6
+                                             HRVDN                                                                                                                                     HRVDN            constraints present in real-world search missions, thus further
+                                             Reinforce                                                                                 1500                                            Reinforce
+                            5
+                                             QMIX                                                                                                                                      QMIX             improving the algorithm’s robustness for real-world applica-
+  Number of targets found
+
+
+
+
+                                                                                                   Number of collisions
+
+
+
+
+                                             QtranAlt                                                                                                                                  QtranAlt
+                            4                                                                                                                                                                           tions.
+                                                                                                                                       1000
+                            3
+
+                            2
+                                                                                                                                        500
+                                                                                                                                                                                                                                                                 R EFERENCES
+                            1
+                                                                                                                                                                                                         [1] M. Liwang, Z. Gao, and X. Wang, “Let’s trade in the future! a futures-
+                            0                                                                                                             0                                                                  enabled fast resource trading mechanism in edge computing-assisted uav
+                                0.0         0.5      1.0         1.5      2.0    2.5         3.0                                              0                1                   2                3
+                                                               Episode                   1e3                                                                         Episode                    1e3          networks,” IEEE Journal on Selected Areas in Communications, vol. 39,
+                                                                                                                                                                                                             no. 11, pp. 3252–3270, 2021.
+                                                           (a)                                                                                                 (b)                                       [2] S. Hayat, E. Yanmaz, and R. Muzaffar, “Survey on unmanned aerial
+                                                                                                                                                                                                             vehicle networks for civil applications: A communications viewpoint,”
+                                                                                                                                       1.0                                                                   IEEE Communications surveys and tutorials, vol. 18, no. 4, pp. 2624–
+                            90%                                                                                                                                                         HRVDN
+                                                                                                                                                                                                             2661, 2016.
+                                                                                                   Normalized average episode reward
+
+
+
+
+                                                                                                                                                                                        Reinforce
+                            80%                                                                                                        0.5                                              QMIX             [3] E. T. Alotaibi, S. S. Alqefari, and A. Koubaa, “Lsar: Multi-uav col-
+                                                                                                                                                                                        QtranAlt             laboration for search and rescue missions,” IEEE Access, vol. 7, pp.
+  Coverage rate
+
+
+
+
+                            70%
+                                                                                                                                                                                                             55 817–55 832, 2019.
+                                                                                                                                       0.0
+                            60%                                                                                                                                                                          [4] S. A. Vollgger and A. R. Cruden, “Mapping folds and fractures in
+                                                                                 HRVDN                                                                                                                       basement and cover rocks using uav photogrammetry, cape liptrap and
+                            50%                                                                                                        -0.5
+                                                                                 Reinforce                                                                                                                   cape paterson, victoria, australia,” Journal of Structural Geology, vol. 85,
+                                                                                 QMIX
+                            40%                                                  QtranAlt                                                                                                                    pp. 168–187, 2016.
+                                                                                                                                       -1.0                                                              [5] L. Zhou, S. Leng, Q. Wang, and Q. Liu, “Integrated sensing and
+                                      0.0     0.5        1.0      1.5      2.0    2.5        3.0                                              0            1                   2            3
+                                                                Episode                  1e3                                                                         Episode                     1e3         communication in uav swarms for cooperative multiple targets tracking,”
+                                                                                                                                                                                                             IEEE Transactions on Mobile Computing, pp. 1–17, 2023.
+                                                           (c)                                                                                                     (d)                                   [6] J. Cho, J. Sung, J. Yoon, and H. Lee, “Towards persistent surveillance
+Fig. 11. Convergence performance of Reinforce, QMIX, QtranAlt, and                                                                                                                                           and reconnaissance using a connected swarm of multiple uavs,” IEEE
+HRVDN in the environment with 10 UAVs, 10 targets, and 5 threats in 20 ×                                                                                                                                     Access, vol. 8, pp. 157 906–157 917, 2020.
+20 grids during training process. (a) Number of targets found. (b) Number of                                                                                                                             [7] K. Yan, L. Xiang, and K. Yang, “Cooperative target search algorithm
+collisions. (c) Coverage rate. (d) Normalized episode reward.                                                                                                                                                for uav swarms with limited communication and energy capacity,” IEEE
+                                                                                                                                                                                                             Communications Letters, vol. 28, no. 5, pp. 1102–1106, 2024.
+                                                                                                                                                                                                         [8] Y. Jiang, Y. Gao, W. Song, Y. Li, and Q. Quan, “Bibliometric analysis
+   For future work, we plan to enhance the fidelity of our                                                                                                                                                   of uav swarms,” Journal of systems engineering and electronics, vol. 33,
+                                                                                                                                                                                                             no. 2, pp. 406–425, 2022.
+simulation by incorporating more realistic sensor models and                                                                                                                                             [9] M. Y. Arafat and S. Moh, “A survey on cluster-based routing protocols
+communication constraints. A particularly promising direction                                                                                                                                                for unmanned aerial vehicle networks,” IEEE Access, vol. 7, pp. 498–
+is to integrate dedicated connectivity maintenance algorithms                                                                                                                                                516, 2019.
+                                                                                                                                                                                                        [10] J. Lee and V. Friderikos, “Multiple uavs trajectory optimization in
+with the current search framework to ensure robust inter-                                                                                                                                                    multicell networks with adjustable overlapping coverage,” IEEE Internet
+UAV communication throughout the mission. We will also                                                                                                                                                       of Things Journal, vol. 10, no. 10, pp. 9122–9135, 2023.
+
+
+                                Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                                                                 © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                                                                          but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                      15
+
+
+
+[11] H. Duan, J. Zhao, Y. Deng, Y. Shi, and X. Ding, “Dynamic discrete                                using intrinsic reward function,” Advanced Engineering Informatics,
+     pigeon-inspired optimization for multi-uav cooperative search-attack                             vol. 49, p. 101360, 2021.
+     mission planning,” IEEE transactions on aerospace and electronic                            [32] H. Yu and X. Zhao, “Deep reinforcement learning with reward design for
+     systems, vol. 57, no. 1, pp. 706–720, 2021.                                                      quantum control,” IEEE Transactions on Artificial Intelligence, vol. 5,
+[12] Z. Zhen, Y. Chen, L. Wen, and B. Han, “An intelligent cooperative mis-                           no. 3, pp. 1087–1101, 2024.
+     sion planning scheme of uav swarm in uncertain dynamic environment,”                        [33] Y. Luo, Y. Wang, K. Dong, Y. Liu, Z. Sun, Q. Zhang, and B. Song,
+     Aerospace Science and Technology, vol. 100, p. 105826, 2020.                                     “D2sr: Transferring dense reward function to sparse by network reset-
+[13] W. Du, W. Ying, P. Yang, X. Cao, G. Yan, K. Tang, and D. Wu,                                     ting,” in 2023 IEEE International Conference on Real-time Computing
+     “Network-based heterogeneous particle swarm optimization and its                                 and Robotics (RCAR), ser. 2023 IEEE International Conference on Real-
+     application in uav communication coverage,” IEEE Transactions on                                 time Computing and Robotics (RCAR). Datong, China: IEEE, 2023,
+     Emerging Topics in Computational Intelligence, vol. 4, no. 3, pp. 312–                           pp. 906–911.
+     323, 2020.                                                                                  [34] L. C. Yue Wei, “Multi-unmanned aerial vehicles cooperative adaptive
+[14] L. C. Garaffa, M. Basso, A. A. Konzen, and E. P. de Freitas, “Rein-                              search path planning based on multi-bee colony,” Science Technology
+     forcement learning for mobile robotics exploration: A survey,” IEEE                              and Engineering, vol. 22, no. 5, p. 2108, 2022.
+     Transactions on Neural Networks and Learning Systems, vol. 34, no. 8,                       [35] J.-D. M. M. Biomo, T. Kunz, and M. St-Hilaire, “An enhanced gauss-
+     pp. 3796–3810, 2023.                                                                             markov mobility model for simulations of unmanned aerial ad hoc net-
+[15] T. T. Nguyen, N. D. Nguyen, and S. Nahavandi, “Deep reinforcement                                works,” in 2014 7th IFIP Wireless and Mobile Networking Conference
+     learning for multiagent systems: A review of challenges, solutions, and                          (WMNC). IEEE, 2014, pp. 1–8.
+     applications,” IEEE Transactions on Cybernetics, vol. 50, no. 9, pp.                        [36] J. Hu, L. Xie, K.-Y. Lum, and J. Xu, “Multiagent information fusion
+     3826–3839, 2020.                                                                                 and cooperative control in target search,” IEEE Transactions on Control
+[16] A. Costley, R. Christensen, R. C. Leishman, and G. N. Droge, “Sensitiv-                          Systems Technology, vol. 21, no. 4, pp. 1223–1235, 2012.
+     ity of single-pulse radar detection to aircraft pose uncertainties,” IEEE                   [37] Y. Liu, Y. Peng, M. Wang, J. Xie, and R. Zhou, “Multi-usv system
+     Transactions on Aerospace and Electronic Systems, vol. 59, no. 3, pp.                            cooperative underwater target search based on reinforcement learning
+     2286–2295, 2023.                                                                                 and probability map,” Mathematical problems in Engineering, vol. 2020,
+[17] M. Torres, D. A. Pelta, J. L. Verdegay, and J. C. Torres, “Coverage path                         no. 1, p. 7842768, 2020.
+     planning with unmanned aerial vehicles for 3d terrain reconstruction,”                      [38] H. P. Van Hasselt, M. Hessel, and J. Aslanides, “When to use parametric
+     Expert Systems with Applications, vol. 55, pp. 441–451, 2016.                                    models in reinforcement learning?” Advances in Neural Information
+[18] J. Chen, F. Ling, Y. Zhang, T. You, Y. Liu, and X. Du, “Coverage path                            Processing Systems, vol. 32, 2019.
+     planning of heterogeneous unmanned aerial vehicles based on ant colony
+     system,” Swarm and Evolutionary Computation, vol. 69, p. 101005,
+     2022.
+[19] V. An, Z. Qu, F. Crosby, R. Roberts, and V. An, “A triangulation-
+     based coverage path planning,” IEEE Transactions on Systems, Man,
+     and Cybernetics: Systems, vol. 50, no. 6, pp. 2157–2169, 2020.
+[20] Y. Shen, C. Wei, Y. Sun, and H. Duan, “Bird flocking inspired methods                                                       Gaoqing Shen received his B.S., M.S., and Ph.D. in
+     for multi-uav cooperative target search,” IEEE Transactions on Circuits                                                     communication and information system from Nan-
+     and Systems II: Express Briefs, vol. 71, no. 2, pp. 702–706, 2024.                                                          jing University of Aeronautics and Astronautics,
+[21] P. Yao and Z. Zhao, “Improved glasius bio-inspired neural network for                                                       Nanjing, China in 2016, 2019, 2023 respectively.
+     target search by multi-agents,” Information Sciences, vol. 568, pp. 40–                                                     He is currently a Lecturer in the Fundamental Ex-
+     53, 2021.                                                                                                                   perimental Teaching Department, Nanjing Univer-
+[22] H. Saadaoui, F. E. Bouanani, and E. Illi, “Information sharing based on                                                     sity of Aeronautics and Astronautics. His research
+     local pso for uavs cooperative search of moved targets,” IEEE Access,                                                       interests are in reinforcement learning and swarm
+     vol. 9, pp. 134 998–135 011, 2021.                                                                                          intelligence.
+[23] M. A. Alanezi, H. R. E. H. Bouchekara, T. A.-A. Apalara, M. S.
+     Shahriar, Y. A. Sha’Aban, M. S. Javaid, and M. A. Khodja, “Dynamic
+     target search using multi-uavs based on motion-encoded genetic algo-
+     rithm with multiple parents,” IEEE Access, vol. 10, pp. 77 922–77 939,
+     2022.
+[24] X. Cao, H. Luo, J. Tai, R. Jiang, and G. Wang, “Multi-agent target
+     search strategy optimization: Hierarchical reinforcement learning with                                                      Yuyang Yao received the B.S. degree in com-
+     multi-criteria negative feedback,” Applied Soft Computing, vol. 149, p.                                                     munications engineering from Nanjing University
+     110999, 2023.                                                                                                               of Information Science and Technology, Nanjing,
+[25] W. Wei, J. Wang, Z. Fang, J. Chen, Y. Ren, and Y. Dong, “3u: Joint                                                          China in 2024. He is currently working toward
+     design of uav-usv-uuv networks for cooperative target hunting,” IEEE                                                        the M.S degree in communication and information
+     Transactions on Vehicular Technology, vol. 72, no. 3, pp. 4085–4090,                                                        systems with Nanjing University of Aeronautics and
+     2023.                                                                                                                       Astronautics, Nanjing, China. His research interests
+[26] G. Shen, L. Lei, X. Zhang, Z. Li, S. Cai, and L. Zhang, “Multi-uav                                                          are in embodied intelligence and UAV swarms.
+     cooperative search based on reinforcement learning with a digital twin
+     driven training framework,” IEEE Transactions on Vehicular Technology,
+     vol. 72, no. 7, pp. 8354–8368, 2023.
+[27] B. Zhang, X. Lin, Y. Zhu, J. Tian, and Z. Zhu, “Enhancing multi-
+     uav reconnaissance and search through double critic ddpg with belief
+     probability maps,” IEEE Transactions on Intelligent Vehicles, vol. 9,
+     no. 2, pp. 3827–3842, 2024.
+[28] S. Perez-Carabaza, E. Besada-Portas, J. A. Lopez-Orozco, and J. M.
+     de la Cruz, “Ant colony optimization for multi-uav minimum time search                                                      Lei Lei received the B.S. degree in electronic and
+     in uncertain domains,” Applied Soft Computing, vol. 62, pp. 789–806,                                                        information engineering from Northwestern Poly-
+     2018.                                                                                                                       technical University, Xi’an, China in 2002, and the
+[29] S. Gronauer and K. Diepold, “Multi-agent deep reinforcement learning:                                                       Ph.D. degree in communication and information
+     a survey,” Artificial Intelligence Review, vol. 55, no. 2, pp. 895–943,                                                     systems from Nanjing University of Aeronautics
+     2022.                                                                                                                       and Astronautics, Nanjing, China in 2008. He is
+[30] C. Wu, B. Ju, Y. Wu, X. Lin, N. Xiong, G. Xu, H. Li, and X. Liang,                                                          currently a professor with the College of Electronic
+     “Uav autonomous target search based on deep reinforcement learning                                                          and Information Engineering, Nanjing University of
+     in complex disaster scene,” IEEE Access, vol. 7, pp. 117 227–117 245,                                                       Aeronautics and Astronautics. His current research
+     2019.                                                                                                                       interests are in wireless ad hoc networks and UAV
+[31] Q. Liu, Z. Liu, B. Xiong, W. Xu, and Y. Liu, “Deep reinforcement                                                            swarms.
+     learning-based safe interaction for industrial human-robot collaboration
+
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+                    This article has been accepted for publication in IEEE Internet of Things Journal. This is the author's version which has not been fully edited and
+                                               content may change prior to final publication. Citation information: DOI 10.1109/JIOT.2025.3624020
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2015                                                                                                                                      16
+
+
+
+                         Xiaolang Zhu received the B.S. degree in com-
+                         munication engineering from Nantong University,
+                         Nantong, China, in 2012, and the M.S. degree
+                         in communication and information systems from
+                         Nanjing University of Aeronautics and Astronau-
+                         tics, Nanjing, China in 2015. He is currently a
+                         Lecturer in the Fundamental Experimental Teaching
+                         Department, Nanjing University of Aeronautics and
+                         Astronautics. His research interests are in ad hoc
+                         networks and swarm intelligence.
+
+
+
+
+                         Pan Cao received the M.S. degree in electronic
+                         and communication engineering from Nanjing Uni-
+                         versity of Posts and Telecommunications, Nan-
+                         jingChina, in 2020. She is currently pursuing the
+                         Ph.D. degree in communication and information
+                         systems with Nanjing University of Aeronautics and
+                         Astronautics, Nanjing, China. Her research interests
+                         include UAV swarm cooperation and embodied in-
+                         telligence.
+
+
+
+
+                         Xiaochang Liu received the B.S. degree in elec-
+                         tronic information engineering from Hefei Univer-
+                         sity of Technology, Hefei, China in 2020, and the
+                         M.S. degree in information and communication en-
+                         gineering from Civil Aviation University of China,
+                         Tianjin, China in 2023. He is currently working
+                         toward the Ph.D. degree in information and com-
+                         munication engineering with Nanjing University of
+                         Aeronautics and Astronautics, Nanjing, China. His
+                         research interests are in UAV swarms and digital
+                         twins.
+
+
+
+
+                         Xueying Qian received the B.S. degree in informa-
+                         tion engineering from Nanjing University of Aero-
+                         nautics and Astronautics, Nanjing, China in 2022.
+                         She is currently working toward the M.S degree
+                         in communication and information systems with
+                         Nanjing University of Aeronautics and Astronautics,
+                         Nanjing, China. Her research interests are in rein-
+                         forcement learning and UAV swarms.
+
+
+
+
+    Authorized licensed use limited to: Harbin Institute of Technology. Downloaded on October 27,2025 at 02:53:32 UTC from IEEE Xplore. Restrictions apply.
+                    © 2025 IEEE. All rights reserved, including rights for text and data mining and training of artificial intelligence and similar technologies. Personal use is permitted,
+                                       but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.

@@ -1,0 +1,14 @@
+\begin{table}[t]
+\centering
+\caption{Appendix boundary evidence for dual scheduling. Dual scheduling changes runtime behavior and reduces shield time, but in the current evidence it does not improve the main safety metrics over threshold-only progressive. This table is intended as boundary evidence, not as a main success result.}
+\label{tab:appendix-dual-boundary}
+\small
+\begin{tabular}{lrrrrrrr}
+\toprule
+Setting & Search & Coverage & Collision & Guarantee & Rec. dead-end & Gate & Shield ms \\
+\midrule
+\texttt{threshold\_only} & 0.9987 & 0.9979 & 92.57 & 0.3324 & 0.4437 & 0.2760 & 238.13 \\
+\texttt{threshold\_only\_dual} & 0.9987 & 0.9995 & 108.49 & 0.3864 & 0.4708 & 0.2462 & 181.29 \\
+\bottomrule
+\end{tabular}
+\end{table}

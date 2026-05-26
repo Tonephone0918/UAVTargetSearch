@@ -1,0 +1,277 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\title{Bicycle-Inspired Stabilization Controller for Reinforcement Learning Training}
+\author{}
+\date{}
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\begin{document}
+
+\maketitle
+
+\section{Motivation}
+
+The bicycle--unicycle comparison suggests a useful control abstraction for reinforcement learning. A bicycle is not easier to balance merely because it has two wheels. Its main advantage is a \emph{functional separation}: the front wheel provides high-bandwidth steering correction, while the rear wheel mainly provides propulsion, wheelbase, and a mass--inertia base that makes small steering corrections effective at the system level.
+
+This observation motivates the following research question:
+\begin{quote}
+Can reinforcement learning training be made more stable by introducing a bicycle-like stabilizing controller that performs small, fast corrective interventions, while the main learner remains responsible for long-horizon performance improvement?
+\end{quote}
+
+The core idea is not to replace the learner, but to add a second control channel that plays a role analogous to the bicycle front wheel: it reacts quickly when the training trajectory starts to wobble, yet it does not become the main source of optimization progress.
+
+\section{What the Bicycle Analogy Actually Means}
+
+\subsection{System-level interpretation}
+
+The bicycle analogy should be interpreted carefully.
+
+\begin{itemize}[leftmargin=1.5em]
+    \item The front wheel does not merely ``help the rear wheel.'' It helps stabilize the \emph{entire bicycle-rider system}.
+    \item The rear wheel does not directly control the front wheel. Instead, it maintains forward speed and contributes wheelbase, inertia, and mass distribution, which make front-wheel steering effective.
+    \item The front wheel behaves like a high-frequency correction actuator, while the rear wheel and frame behave like the smoother, lower-frequency body of the system.
+\end{itemize}
+
+Thus, the deeper principle is not simply ``separate steering and driving,'' but rather:
+\begin{quote}
+separate \emph{long-horizon progress generation} from \emph{fast local stabilization}.
+\end{quote}
+
+\subsection{Why the front-wheel trajectory looks more oscillatory}
+
+Empirically, the front-wheel trajectory often looks more oscillatory than the rear-wheel trajectory. This is natural:
+\begin{itemize}[leftmargin=1.5em]
+    \item the front wheel directly carries steering corrections;
+    \item the rear wheel has no independent steering degree of freedom and therefore follows the body;
+    \item the wheelbase acts like a geometric lever arm, which amplifies front-end lateral motion;
+    \item the body dynamics filter high-frequency steering fluctuations before they appear in the rear-wheel path.
+\end{itemize}
+
+This is an important clue for reinforcement learning: a useful stabilizer may look ``busier'' than the base learner, even when the overall training trajectory becomes smoother.
+
+\section{Abstraction for Reinforcement Learning}
+
+\subsection{Two-channel view of training}
+
+Let the learning system contain two channels:
+\begin{itemize}[leftmargin=1.5em]
+    \item a \textbf{base learning channel}, which improves return, exploration, and long-horizon competence;
+    \item a \textbf{stabilizing control channel}, which monitors instability indicators and applies small corrective actions when training approaches a dangerous regime.
+\end{itemize}
+
+This yields a bicycle-inspired division of responsibilities:
+\begin{itemize}[leftmargin=1.5em]
+    \item the base learner is analogous to the propulsion-providing rear subsystem;
+    \item the stabilizer is analogous to the steering-based front subsystem;
+    \item the full learner--controller pair is the object that should remain stable.
+\end{itemize}
+
+\subsection{Design principles}
+
+The analogy suggests four design principles.
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Responsibility separation.} Performance improvement and stability maintenance should not be forced into a single channel.
+    \item \textbf{Fast and small interventions.} The stabilizer should act with high frequency but low amplitude, just as steering corrections are frequent but small.
+    \item \textbf{Intervene near instability boundaries.} The controller should activate mainly when diagnostics indicate a risk of divergence, collapse, or unsafe drift.
+    \item \textbf{Preserve the learner's dominance.} The controller should not erase the base learner's ability to explore and optimize over long horizons.
+\end{enumerate}
+
+\section{Minimal Mathematical Formulation}
+
+\subsection{Training state and diagnostics}
+
+\begin{definition}[Training diagnostic state]
+Let $z_t$ denote a vector of training diagnostics at update step $t$. Typical components may include:
+\begin{equation}
+z_t =
+\bigl[
+D_{\mathrm{KL}}^{(t)},
+\|g_t\|,
+\mathrm{Var}(\delta_t^{\mathrm{TD}}),
+H(\pi_t),
+\rho_t^{\mathrm{unsafe}},
+\rho_t^{\mathrm{shield}},
+\rho_t^{\mathrm{OOD}}
+\bigr],
+\end{equation}
+where $D_{\mathrm{KL}}^{(t)}$ is policy drift, $\|g_t\|$ is gradient norm, $\mathrm{Var}(\delta_t^{\mathrm{TD}})$ is temporal-difference volatility, $H(\pi_t)$ is policy entropy, $\rho_t^{\mathrm{unsafe}}$ is unsafe-event rate, $\rho_t^{\mathrm{shield}}$ is shield intervention rate, and $\rho_t^{\mathrm{OOD}}$ is an out-of-distribution occupancy proxy.
+\end{definition}
+
+\subsection{Base update and stabilizing correction}
+
+Let $u_t^{\mathrm{base}}$ denote the update proposed by the base learner. For example, it may represent a joint actor--critic parameter update, a learning-rate adjustment, or a curriculum-scheduling step. Let
+\begin{equation}
+u_t^{\mathrm{ctrl}} = K_{\psi}(z_t)
+\end{equation}
+be the output of a stabilizing controller parameterized by $\psi$.
+
+The final update is then defined as
+\begin{equation}
+u_t =
+\Pi_{\mathcal U_{\mathrm{stable}}(z_t)}
+\left(
+u_t^{\mathrm{base}} + \alpha_t u_t^{\mathrm{ctrl}}
+\right),
+\label{eq:final_update}
+\end{equation}
+where $\alpha_t \ge 0$ controls intervention strength and $\Pi_{\mathcal U_{\mathrm{stable}}(z_t)}$ denotes projection onto a stable-update set.
+
+\begin{definition}[Stable-update set]
+Define
+\begin{equation}
+\mathcal U_{\mathrm{stable}}(z_t)
+=
+\left\{
+u \ \middle|\
+\begin{array}{l}
+D_{\mathrm{KL}}(\pi_{\theta_t},\pi_{\theta_t+u_\theta}) \le \varepsilon_{\mathrm{KL}},\\
+\|u_\theta\| \le \varepsilon_{\theta},\\
+L_V(\phi_t + u_\phi) - L_V(\phi_t) \le \varepsilon_V,\\
+\widehat{\rho}^{\mathrm{unsafe}}_{t+1}(u) \le \varepsilon_{\mathrm{safe}}
+\end{array}
+\right\}.
+\end{equation}
+This set collects updates that satisfy one-step training stability surrogates, such as limited policy drift, bounded parameter motion, bounded critic deterioration, and bounded next-step unsafe risk.
+\end{definition}
+
+\begin{remark}
+Equation~\eqref{eq:final_update} is not meant to prescribe a single implementation. It only formalizes the idea that the stabilizer should shape the \emph{training trajectory} rather than replace the learner's optimization objective.
+\end{remark}
+
+\subsection{Interpretation}
+
+This formulation captures a direct analogy to bicycle balance:
+\begin{itemize}[leftmargin=1.5em]
+    \item $u_t^{\mathrm{base}}$ pushes training forward;
+    \item $u_t^{\mathrm{ctrl}}$ provides corrective steering;
+    \item $\mathcal U_{\mathrm{stable}}(z_t)$ plays the role of a locally safe operating region;
+    \item the projection operator prevents training from taking a destabilizing turn.
+\end{itemize}
+
+\begin{proposition}[One-step stability preservation]
+If the executed update $u_t$ always belongs to $\mathcal U_{\mathrm{stable}}(z_t)$ by construction, then all one-step stability surrogates encoded in $\mathcal U_{\mathrm{stable}}(z_t)$ are preserved at every update step.
+\end{proposition}
+
+\begin{remark}
+This is the training-level analogue of a shield that preserves one-step action safety. The proposition is simple, but useful: once the stabilizer is formulated as a filter or projection onto an admissible update set, one-step training safeguards can be made explicit.
+\end{remark}
+
+\section{Where the Controller Can Be Inserted}
+
+The bicycle-inspired controller can be instantiated at several levels.
+
+\subsection{Action level}
+
+The controller modifies or filters executed actions:
+\begin{equation}
+a_t = \Pi_{\mathcal A_{\mathrm{safe}}(s_t)}\bigl(a_t^{\pi} + \Delta a_t^{\mathrm{ctrl}}\bigr).
+\end{equation}
+This is closest to standard safety shields and is suitable when the main concern is online execution safety.
+
+\subsection{Update level}
+
+The controller modifies optimization steps, learning rates, trust-region bounds, or actor--critic coupling strength. This is the most direct training-stability analogue of front-wheel steering, because it acts on the short-timescale direction of the learning trajectory.
+
+Examples include:
+\begin{itemize}[leftmargin=1.5em]
+    \item adaptive learning-rate shrinkage when $D_{\mathrm{KL}}$ spikes;
+    \item temporary actor freeze when critic volatility becomes too high;
+    \item adaptive entropy amplification when policy collapse is detected;
+    \item rollback or trust-region projection when instability thresholds are exceeded.
+\end{itemize}
+
+\subsection{Data and scheduling level}
+
+The controller adjusts replay composition, curriculum difficulty, risk-gate thresholds, or the frequency of shield escalation. This is a slower but often cheaper way to shape the operating regime in which the learner evolves.
+
+\section{Connection to Shielded MARL}
+
+For the current multi-UAV shielded-MARL research line, this idea is especially relevant because action-level safety and training-level stability need not be treated as separate worlds.
+
+The same framework can use shield-related signals as part of $z_t$, for example:
+\begin{itemize}[leftmargin=1.5em]
+    \item hard-safe set size,
+    \item recursive-feasible set size,
+    \item shield intervention frequency,
+    \item dead-end encounter rate,
+    \item risk-gate activation ratio.
+\end{itemize}
+
+This suggests a unified picture:
+\begin{itemize}[leftmargin=1.5em]
+    \item the action shield prevents unsafe execution;
+    \item the training stabilizer prevents unstable optimization dynamics;
+    \item both can be expressed as admissible-set filtering with different objects: actions versus updates.
+\end{itemize}
+
+In this sense, the bicycle analogy is not merely metaphorical. It points to a broader architectural principle:
+\begin{quote}
+use one channel to generate progress, and another channel to keep that progress inside a recoverable region.
+\end{quote}
+
+\section{Research Questions and Hypotheses}
+
+The idea can be turned into a concrete research agenda.
+
+\subsection{Question 1: Does explicit stabilization improve seed-wise robustness?}
+
+\textbf{Hypothesis.}
+A two-channel learner with sparse stabilizing corrections exhibits lower variance across random seeds than a pure base learner with the same backbone.
+
+\subsection{Question 2: Can selective intervention preserve performance?}
+
+\textbf{Hypothesis.}
+If the controller only intervenes near instability boundaries, then training stability improves without the heavy performance penalty of always-on conservativeness.
+
+\subsection{Question 3: Can shield signals predict optimization instability?}
+
+\textbf{Hypothesis.}
+In safety-critical MARL, action-level safety indicators and training-level instability indicators are statistically coupled; therefore shield-derived features can improve the triggering policy of the training stabilizer.
+
+\section{Suggested Experimental Path}
+
+An initial experimental program can be organized in four stages.
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Diagnostics first.} Build a training-state vector $z_t$ and log it alongside return and safety metrics.
+    \item \textbf{Minimal controller.} Start with a simple update-level controller that scales learning rate, KL budget, or actor-update frequency.
+    \item \textbf{Selective activation.} Compare always-on stabilization, threshold-based activation, and risk-aware activation.
+    \item \textbf{Unified shield connection.} Test whether shield statistics improve stability prediction and control decisions.
+\end{enumerate}
+
+Key evaluation targets should include:
+\begin{itemize}[leftmargin=1.5em]
+    \item mean return and final policy quality,
+    \item variance across seeds,
+    \item critic-loss spikes and policy-collapse events,
+    \item unsafe rate and shield usage,
+    \item extra computational overhead.
+\end{itemize}
+
+\section{Takeaway}
+
+The most useful lesson from the bicycle analogy is not that reinforcement learning needs an additional heuristic module. The stronger lesson is architectural:
+\begin{quote}
+stable learning may require separating the mechanism that drives progress from the mechanism that keeps the trajectory from tipping over.
+\end{quote}
+
+Under this view, a training stabilizer should behave like the bicycle front wheel:
+\begin{itemize}[leftmargin=1.5em]
+    \item fast,
+    \item local,
+    \item corrective,
+    \item sparse when possible,
+    \item and always subordinate to the long-horizon objective of the base learner.
+\end{itemize}
+
+This perspective appears promising for safe RL, shielded MARL, curriculum scheduling, and other settings in which optimization progress and dynamical stability must be balanced rather than conflated.
+
+\end{document}

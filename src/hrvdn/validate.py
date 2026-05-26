@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict
 
 import torch
+import numpy as np
 
 from .evaluate import evaluate, evaluate_actor_policy
 from .env import UAVSearchEnv
@@ -74,6 +75,12 @@ def format_metrics(metrics: Dict[str, float]) -> str:
         "avg_risk_region",
         "avg_risk_hist",
         "avg_risk_support",
+        "effective_base_risk_threshold",
+        "effective_runtime_risk_threshold",
+        "dual_schedule_active_rate",
+        "dual_risk_band_low_rate",
+        "dual_risk_band_medium_rate",
+        "dual_risk_band_high_rate",
         "high_risk_rate",
         "recursive_gate_rate",
         "near_miss_rate",
@@ -107,10 +114,20 @@ def format_metrics(metrics: Dict[str, float]) -> str:
         "future_witness_branch_count",
         "avg_future_witness_branch_count",
         "future_beam_width_used",
+        "future_exact_query_count",
+        "future_exact_rescue_count",
+        "future_exact_false_empty_count",
+        "future_exact_pruned_nonempty_count",
+        "future_beam_pruned_branch_count",
         "emergency_count",
         "emergency_rate",
         "guarantee_broken_count",
         "guarantee_broken_rate",
+        "perf_recursive_time_ms",
+        "perf_recursive_work_time_ms",
+        "perf_recursive_gate_run_rate",
+        "perf_recursive_gate_skip_rate",
+        "perf_recursive_candidate_checks",
         "perf_hard_time_ms",
         "perf_exact_hard_time_ms",
         "perf_shield_time_ms",
@@ -123,8 +140,15 @@ def format_metrics(metrics: Dict[str, float]) -> str:
     parts = []
     for k in order:
         if k in metrics:
-            parts.append(f"{k}={metrics[k]:.6f}")
+            v = metrics[k]
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                parts.append(f"{k}={v:.6f}")
+            else:
+                parts.append(f"{k}={v}")
     for k, v in metrics.items():
         if k not in order:
-            parts.append(f"{k}={v:.6f}")
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                parts.append(f"{k}={v:.6f}")
+            else:
+                parts.append(f"{k}={v}")
     return ", ".join(parts)

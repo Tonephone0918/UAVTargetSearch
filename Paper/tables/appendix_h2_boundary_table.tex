@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\caption{Appendix boundary evidence for H=2 filtering. H=2 is treated as a runtime stronger-layer candidate rather than a main learned-policy success. Cross-evaluation suggests that the strongest signal comes from applying the H=2 shield at runtime, not from the H=2-trained checkpoint uniformly dominating.}
+\label{tab:appendix-h2-boundary}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+Setting & Search & Collision & Guarantee & Rec. dead-end & Shield ms \\
+\midrule
+\texttt{H1 ckpt + H1 shield} & 1.0000 & 86.89 & 0.3741 & 0.4444 & 181.62 \\
+\texttt{H1 ckpt + H2 shield} & 1.0000 & 76.44 & 0.3157 & 0.1287 & 92.19 \\
+\texttt{H2 ckpt + H1 shield} & 1.0000 & 90.67 & 0.3630 & 0.4824 & 206.22 \\
+\texttt{H2 ckpt + H2 shield} & 0.9778 & 96.11 & 0.3500 & 0.1500 & 99.94 \\
+\bottomrule
+\end{tabular}
+\end{table}

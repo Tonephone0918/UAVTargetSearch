@@ -1,0 +1,544 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{tabularx}
+
+\title{Theoretical Analysis of Safety Guarantees with Shielding}
+\author{}
+\date{}
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}{Remark}
+
+\begin{document}
+
+\maketitle
+
+\section{Overview}
+
+The current research line studies a \emph{layered shielding framework} for multi-UAV cooperative search. The key distinction is no longer whether safety is turned on or off, but rather which level of conservativeness is active:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Hard-safety layer}: one-step safety is always enforced before execution.
+    \item \textbf{Recursive-feasibility layer}: the shield prefers actions that preserve at least one future safe action.
+    \item \textbf{Look-ahead layer}: the shield can be extended to short-horizon viability checks.
+    \item \textbf{Scheduling layer}: training progress and online risk determine how strongly the stricter layers should intervene.
+\end{itemize}
+
+Under this interpretation, the main theoretical question is not whether progressive shielding occasionally permits unsafe actions, but how hard safety, recursive feasibility, short-horizon viability, and risk-aware conservativeness can be combined into a unified and computationally tractable decision process.
+
+\section{Safe Set and Shield Operator}
+
+\begin{definition}[Safe state set]
+Let $s_t$ denote the system state at time $t$, including UAV positions, threat positions, and other necessary environmental variables. The safe state set is defined as
+\begin{equation}
+\mathcal S_{\mathrm{safe}}
+=
+\left\{
+s_t \,\middle|\,
+\|u_{i,t}-u_{j,t}\| \ge R_U^{\min},\ \forall i \neq j;\ 
+\|u_{i,t}-e_{k,t}\| \ge R_E^{\min},\ \forall i,k
+\right\},
+\end{equation}
+where $R_U^{\min}$ is the minimum safety distance between any two UAVs, and $R_E^{\min}$ is the minimum safety distance between a UAV and a threat.
+\end{definition}
+
+\begin{definition}[Safe joint action set]
+Let $A$ denote the joint action space and let $f(s_t,a_t)$ denote the state transition function. The safe joint action set at state $s_t$ is defined as
+\begin{equation}
+A^{\mathrm{safe}}(s_t)
+=
+\left\{
+a_t \in A \mid f(s_t,a_t) \in \mathcal S_{\mathrm{safe}}
+\right\}.
+\end{equation}
+In other words, a joint action is safe if the next state remains inside the safe state set after applying that action.
+\end{definition}
+
+\begin{definition}[Shield operator]
+Define the shield operator as an \emph{action-set filter} rather than a hard-coded external action selector. Given the current state $s_t$, the shield produces an allowed action set
+\begin{equation}
+\mathcal A_t^{\mathrm{allow}}(s_t) \subseteq A^{\mathrm{safe}}(s_t).
+\end{equation}
+The actor then re-selects an action from this set through a masked policy
+\begin{equation}
+\pi_\theta^{\mathrm{mask}}(a \mid o_t,\mathcal A_t^{\mathrm{allow}})
+=
+\frac{\pi_\theta(a\mid o_t)\mathbf 1[a\in \mathcal A_t^{\mathrm{allow}}]}
+{\sum_{a' \in A}\pi_\theta(a'\mid o_t)\mathbf 1[a'\in \mathcal A_t^{\mathrm{allow}}]},
+\end{equation}
+and the final executed action is sampled or selected from $\pi_\theta^{\mathrm{mask}}$. This formulation preserves actor-side preference learning while ensuring that only allowed actions can be executed.
+\end{definition}
+
+\begin{definition}[One-step recursive-feasible action set]
+The one-step recursive-feasible action set is defined as
+\begin{equation}
+A^{\mathrm{rec}}(s_t)
+=
+\left\{
+ a_t \in A^{\mathrm{safe}}(s_t)
+ \mid
+ A^{\mathrm{safe}}(f(s_t,a_t)) \neq \varnothing
+\right\}.
+\end{equation}
+An action is recursive-feasible if it is safe now and does not immediately lead to a state with no remaining safe action.
+\end{definition}
+
+\begin{definition}[Small-horizon viable action set]
+For a finite horizon $H \ge 1$, define the small-horizon viable action set
+\begin{equation}
+A_H^{\mathrm{viable}}(s_t)
+=
+\left\{
+ a_t \in A
+ \mid
+ \exists \text{ a safe continuation of length } H \text{ after } a_t
+\right\}.
+\end{equation}
+This set generalizes one-step recursive feasibility to short-horizon look-ahead safety. In practice, the current implementation may use a greedy or approximate future-safety existence test as a tractable surrogate.
+\end{definition}
+
+\section{Exact Joint Modeling of the One-Step Hard-Safety Layer}
+
+The current implementation computes a sequential approximation of the one-step hard-safe action set. To clarify the underlying mathematical object and to diagnose whether observed dead-end states are intrinsic or induced by the sequential approximation, it is useful to define the exact one-step hard-safety problem as a joint multi-constraint feasibility model.
+
+\begin{definition}[Per-agent valid action domain]
+For each UAV $i$, let
+\begin{equation}
+D_i(s_t)
+=
+\left\{
+a_i \,\middle|\,
+\text{$a_i$ satisfies the local kinematic and boundary-validity constraints at state $s_t$}
+\right\}.
+\end{equation}
+Equivalently, if UAV $i$ is currently at $(x_{i,t},y_{i,t},z_{i,t})$ and action $a_i$ induces displacement $(\Delta x_{i,a_i},\Delta y_{i,a_i},\Delta z_{i,a_i})$, then
+\begin{equation}
+0 \le x_{i,t} + \Delta x_{i,a_i} \le S_x-1,
+\end{equation}
+\begin{equation}
+0 \le y_{i,t} + \Delta y_{i,a_i} \le S_y-1,
+\end{equation}
+\begin{equation}
+0 \le z_{i,t} + \Delta z_{i,a_i} \le Z-1,
+\end{equation}
+must hold, together with the platform's local turning and motion constraints. Thus, the boundary restriction can be treated either as an explicit inequality in the optimization model or as a preprocessing rule that removes invalid actions from $D_i(s_t)$.
+\end{definition}
+
+\begin{definition}[Exact joint one-step hard-safe feasibility model]
+Introduce binary decision variables
+\begin{equation}
+x_{i,a} \in \{0,1\},
+\end{equation}
+where $x_{i,a}=1$ means that UAV $i$ executes action $a \in D_i(s_t)$. The exact one-step hard-safe model is the set of all binary assignments satisfying the following constraints:
+\begin{align}
+\sum_{a \in D_i(s_t)} x_{i,a} &= 1, && \forall i, \label{eq:joint-hard-one-action}\\
+x_{i,a} &= 0, && \forall a \in T_i(s_t), \label{eq:joint-hard-threat}\\
+x_{i,a} + x_{j,b} &\le 1, && \forall ((i,a),(j,b)) \in C_{ij}^{\mathrm{dist}}(s_t), \label{eq:joint-hard-pair}\\
+x_{i,a} + x_{j,b} &\le 1, && \forall ((i,a),(j,b)) \in C_{ij}^{\mathrm{swap}}(s_t). \label{eq:joint-hard-swap}
+\end{align}
+Here $T_i(s_t)$ denotes the set of actions whose next-step position violates the UAV-threat hard-safety constraint, $C_{ij}^{\mathrm{dist}}(s_t)$ denotes the set of pairwise action combinations that violate the UAV-UAV distance constraint, and $C_{ij}^{\mathrm{swap}}(s_t)$ denotes the set of pairwise action combinations that induce a forbidden position swap. The exact joint one-step hard-safe feasible set is therefore
+\begin{equation}
+\mathcal X_{\mathrm{hard}}(s_t)
+=
+\left\{
+x \,\middle|\,
+\text{\eqref{eq:joint-hard-one-action}--\eqref{eq:joint-hard-swap} hold}
+\right\}.
+\end{equation}
+\end{definition}
+
+\begin{remark}
+This model is a pure feasibility problem and does not require an optimization objective in order to define hard safety. In practice, a lightweight objective aligned with actor preference can optionally be added only to extract a witness completion, but the shield semantics should remain unchanged: the actor proposes first, the shield constructs an allowed action set, and the actor re-selects inside that set if needed.
+\end{remark}
+
+\begin{definition}[Exact projected one-step hard-safe action set]
+The exact admissible one-step hard-safe set for UAV $i$ is obtained by projection of the joint feasible set:
+\begin{equation}
+A^{\star}_{\mathrm{hard},i}(s_t)
+=
+\left\{
+a \in D_i(s_t)
+\,\middle|\,
+\exists x \in \mathcal X_{\mathrm{hard}}(s_t)\ \text{such that}\ x_{i,a}=1
+\right\}.
+\end{equation}
+In words, action $a$ is admissible for UAV $i$ if and only if there exists a jointly hard-safe completion of all other UAV actions under which $i$ can execute $a$.
+\end{definition}
+
+\begin{definition}[Conditional exact hard-safe action set]
+Suppose a subset of UAVs $\mathcal P \subseteq \{1,\dots,N\}$ has already been assigned actions $\hat a_{\mathcal P} = \{\hat a_k\}_{k \in \mathcal P}$. The corresponding conditional joint feasible set is
+\begin{equation}
+\mathcal X_{\mathrm{hard}}(s_t;\mathcal P,\hat a_{\mathcal P})
+=
+\left\{
+x \in \mathcal X_{\mathrm{hard}}(s_t)
+\,\middle|\,
+x_{k,\hat a_k}=1,\ \forall k \in \mathcal P
+\right\}.
+\end{equation}
+Then the conditional admissible set for UAV $i \notin \mathcal P$ is
+\begin{equation}
+A^{\star}_{\mathrm{hard},i}(s_t;\mathcal P,\hat a_{\mathcal P})
+=
+\left\{
+a \in D_i(s_t)
+\middle|\,
+\exists x \in \mathcal X_{\mathrm{hard}}(s_t;\mathcal P \cup \{i\},\hat a_{\mathcal P} \cup \{a\})
+\right\}.
+\end{equation}
+This conditional definition matches the actor--shield interaction semantics more closely than a naive sequential approximation based on fixing all remaining UAVs to a single reference joint action.
+\end{definition}
+
+\begin{remark}
+The sequential shield currently used in implementation can be interpreted as an approximation to $A^{\star}_{\mathrm{hard},i}(s_t;\mathcal P,\hat a_{\mathcal P})$. This interpretation is useful because it separates two different causes of a dead-end:
+\begin{itemize}[leftmargin=1.5em]
+    \item a \textbf{true dead-end}, where the conditional exact set is genuinely empty; and
+    \item an \textbf{approximation-induced dead-end}, where the exact conditional set is nonempty but the sequential approximation returns an empty set.
+\end{itemize}
+This distinction provides a principled diagnostic target for future algorithmic improvement.
+\end{remark}
+
+\section{Relation to MPC-like Safety Filtering}
+
+The exact one-step hard-safety model above is closely related to a short-horizon constrained planning problem. In particular, if one only wants a \emph{single} jointly safe action at the current state, a natural MPC-like formulation is
+\begin{equation}
+a_t^{\mathrm{mpc}}
+\in
+\arg\max_{a_t \in A}
+J(s_t,a_t)
+\quad
+\text{s.t.}
+\quad
+f(s_t,a_t)\in \mathcal S_{\mathrm{safe}},
+\end{equation}
+or, for a finite horizon $H \ge 1$,
+\begin{equation}
+\mathbf a_{t:t+H-1}^{\mathrm{mpc}}
+\in
+\arg\max_{\mathbf a_{t:t+H-1}}
+J_H(s_t,\mathbf a_{t:t+H-1})
+\quad
+\text{s.t.}
+\quad
+s_{\tau+1}=f(s_\tau,a_\tau),\ 
+s_{\tau+1}\in \mathcal S_{\mathrm{safe}}
+\end{equation}
+for all $\tau=t,\dots,t+H-1$.
+
+Therefore, the current shielded framework is indeed \emph{MPC-like} in the following sense:
+\begin{itemize}[leftmargin=1.5em]
+    \item it uses an explicit dynamics or transition model;
+    \item it enforces boundary, threat, collision, and swap constraints;
+    \item it reasons over one-step or short-horizon future feasibility;
+    \item it can use joint feasibility search to verify whether a candidate action admits a safe completion.
+\end{itemize}
+
+However, the proposed framework should \emph{not} be interpreted as a standard MPC controller. The key semantic difference is that MPC usually returns a \emph{single optimized action}, whereas the shield computes an \emph{allowed action set}. More precisely, for UAV $i$ the shield is interested in the projected feasible set
+\begin{equation}
+A^{\star}_{\mathrm{hard},i}(s_t)
+=
+\left\{
+a_i \in D_i(s_t)
+\middle|\,
+\exists a_{-i}\ \text{s.t.}\ (a_i,a_{-i}) \in A^{\mathrm{safe}}(s_t)
+\right\},
+\end{equation}
+or its stronger recursive / look-ahead counterparts, rather than in a single optimizer of a horizon cost.
+
+The execution semantics are therefore:
+\begin{enumerate}[label=(\arabic*),leftmargin=1.8em]
+    \item the actor first proposes an action according to its learned preference;
+    \item the shield computes $A_{\mathrm{hard}}$, $A^{\mathrm{rec}}$, or $A_H^{\mathrm{viable}}$ as an allowed set;
+    \item if the actor's proposal is not admissible, the actor re-selects \emph{inside} the allowed set.
+\end{enumerate}
+Thus, even when an exact joint feasibility solver or a short-horizon look-ahead search is used internally, its role is to certify or prune admissibility, not to replace the policy with a planner.
+
+\begin{remark}
+The cleanest positioning is that the current method is a \emph{policy-preserving MPC-like shielding framework}: it borrows constrained short-horizon feasibility reasoning from MPC-style methods, but it preserves the actor--shield division of labor. This distinction is central to the present research line, because progressive scheduling and risk-aware scheduling are designed to control \emph{how strongly the allowed set is shrunk}, rather than to decide when a model-predictive planner should take over execution.
+\end{remark}
+
+\section{One-Step Safety Guarantee}
+ 
+\begin{proposition}[One-step safety]
+Suppose the current state satisfies $s_t \in \mathcal S_{\mathrm{safe}}$, and the allowed action set returned by the shield satisfies
+\begin{equation}
+\mathcal A_t^{\mathrm{allow}}(s_t) \subseteq A^{\mathrm{safe}}(s_t),
+\end{equation}
+with $\mathcal A_t^{\mathrm{allow}}(s_t) \neq \varnothing$. If the final executed action is re-selected by the actor from $\mathcal A_t^{\mathrm{allow}}(s_t)$, then the next state satisfies
+\begin{equation}
+s_{t+1} = f(s_t,\tilde a_t) \in \mathcal S_{\mathrm{safe}}.
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Because $\mathcal A_t^{\mathrm{allow}}(s_t) \subseteq A^{\mathrm{safe}}(s_t)$, any action $\tilde a_t$ selected from $\mathcal A_t^{\mathrm{allow}}(s_t)$ must also belong to $A^{\mathrm{safe}}(s_t)$. By definition of $A^{\mathrm{safe}}(s_t)$, this implies
+\begin{equation}
+f(s_t,\tilde a_t) \in \mathcal S_{\mathrm{safe}}.
+\end{equation}
+Therefore, $s_{t+1} \in \mathcal S_{\mathrm{safe}}$.
+\end{proof}
+
+\section{Recursive Safety Guarantee}
+
+\begin{theorem}[Recursive safety]
+Assume that:
+\begin{enumerate}[label=(\arabic*),leftmargin=1.8em]
+    \item the initial state is safe, i.e., $s_0 \in \mathcal S_{\mathrm{safe}}$;
+    \item for any $s_t \in \mathcal S_{\mathrm{safe}}$, the shield returns a nonempty allowed set satisfying
+    \begin{equation}
+    \mathcal A_t^{\mathrm{allow}}(s_t) \subseteq A^{\mathrm{safe}}(s_t),
+    \end{equation}
+    \item the actor always re-selects the final action from $\mathcal A_t^{\mathrm{allow}}(s_t)$;
+    \item the shield uses a transition model consistent with the actual environment transition.
+\end{enumerate}
+Then, for all $t \ge 0$,
+\begin{equation}
+s_t \in \mathcal S_{\mathrm{safe}}.
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+We use mathematical induction.
+
+\textbf{Base case.} By Assumption (1), $s_0 \in \mathcal S_{\mathrm{safe}}$.
+
+\textbf{Induction step.} Assume that $s_t \in \mathcal S_{\mathrm{safe}}$ for some $t \ge 0$. By Assumptions (2) and (3), the final action $\tilde a_t$ belongs to $A^{\mathrm{safe}}(s_t)$. By Proposition 1, this implies that
+\begin{equation}
+s_{t+1} = f(s_t,\tilde a_t) \in \mathcal S_{\mathrm{safe}}.
+\end{equation}
+Hence the claim holds for $t+1$.
+
+By induction, $s_t \in \mathcal S_{\mathrm{safe}}$ for all $t \ge 0$.
+\end{proof}
+
+\section{Robust Safety under Bounded Prediction Errors}
+
+In practical systems, the shield may rely on predicted next-step UAV and threat positions. Therefore, safety guarantees should account for prediction errors.
+
+\begin{theorem}[Robust safety under bounded errors]
+Suppose the prediction errors satisfy
+\begin{equation}
+\|\hat u_{i,t+1} - u_{i,t+1}\| \le \epsilon_U,\qquad
+\|\hat e_{k,t+1} - e_{k,t+1}\| \le \epsilon_E,
+\end{equation}
+where $\hat u_{i,t+1}$ and $\hat e_{k,t+1}$ are predicted UAV and threat positions, while $u_{i,t+1}$ and $e_{k,t+1}$ are the corresponding true positions.
+
+Assume the shield enforces the tightened constraints
+\begin{equation}
+\|\hat u_{i,t+1} - \hat u_{j,t+1}\| \ge R_U^{\min} + 2\epsilon_U,
+\end{equation}
+\begin{equation}
+\|\hat u_{i,t+1} - \hat e_{k,t+1}\| \ge R_E^{\min} + \epsilon_U + \epsilon_E.
+\end{equation}
+Then the true next-step positions satisfy the original safety constraints
+\begin{equation}
+\|u_{i,t+1} - u_{j,t+1}\| \ge R_U^{\min},
+\end{equation}
+\begin{equation}
+\|u_{i,t+1} - e_{k,t+1}\| \ge R_E^{\min}.
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+By the triangle inequality,
+\begin{align}
+\|u_{i,t+1} - u_{j,t+1}\|
+&\ge
+\|\hat u_{i,t+1} - \hat u_{j,t+1}\|
+- \|u_{i,t+1} - \hat u_{i,t+1}\|
+- \|u_{j,t+1} - \hat u_{j,t+1}\| \\
+&\ge
+(R_U^{\min} + 2\epsilon_U) - \epsilon_U - \epsilon_U \\
+&=
+R_U^{\min}.
+\end{align}
+Similarly,
+\begin{align}
+\|u_{i,t+1} - e_{k,t+1}\|
+&\ge
+\|\hat u_{i,t+1} - \hat e_{k,t+1}\|
+- \|u_{i,t+1} - \hat u_{i,t+1}\|
+- \|e_{k,t+1} - \hat e_{k,t+1}\| \\
+&\ge
+(R_E^{\min} + \epsilon_U + \epsilon_E) - \epsilon_U - \epsilon_E \\
+&=
+R_E^{\min}.
+\end{align}
+Therefore, the original safety constraints still hold under bounded prediction errors.
+\end{proof}
+
+\section{Progressive Conservativeness during Training}
+
+The current research line does not interpret progressive shielding as occasionally allowing unsafe actions to pass through. Instead, one-step hard safety is always enforced, while the \emph{conservativeness level} of the shield is gradually strengthened over training.
+
+A convenient hierarchy is
+\begin{equation}
+\mathcal A^{(0)}(s_t)=A^{\mathrm{safe}}(s_t),
+\qquad
+\mathcal A^{(1)}(s_t)=A^{\mathrm{rec}}(s_t),
+\qquad
+\mathcal A^{(2)}(s_t)=A_H^{\mathrm{viable}}(s_t).
+\end{equation}
+A time-varying conservativeness index $\kappa(t)$ selects the active allowed action set:
+\begin{equation}
+\mathcal A_t^{\mathrm{allow}}(s_t)=\mathcal A^{(\kappa(t))}(s_t).
+\end{equation}
+Thus, the progressive mechanism upgrades the decision process from one-step safety to recursive feasibility and then to short-horizon viability, without relaxing the hard safety constraint itself.
+
+When the actor's proposed action does not belong to the current allowed action set, the shield is triggered and the actor re-selects within $\mathcal A_t^{\mathrm{allow}}(s_t)$. A trigger-based penalty can then be added to the reward:
+\begin{equation}
+r_t' = r_t - \beta_t \, \mathbb I_{\mathrm{shield}}(t).
+\end{equation}
+This makes progressive shielding compatible with policy learning: the shield restricts unsafe or overly aggressive decisions, while the actor is still responsible for choosing within the permitted action set.
+
+\begin{remark}
+Under this interpretation, progressive shielding is a \emph{progressive conservativeness} mechanism rather than a relaxation of hard safety. Its role is to control how strongly recursive-feasible or look-ahead constraints influence the actor over the course of training.
+\end{remark}
+
+
+\section{Risk-Aware Dual Scheduling}
+
+The next step is not to directly train a learned risk network, but to upgrade the current binary high-risk gate into a \emph{continuous, interpretable, and low-cost} risk score. The first formal version is
+\begin{equation}
+\xi_{i,t} = w_1 \, \xi_{i,t}^{\mathrm{clear}} + w_2 \, \xi_{i,t}^{\mathrm{region}} + w_3 \, \xi_{i,t}^{\mathrm{hist}},
+\qquad
+w_1+w_2+w_3=1,
+\quad w_k\ge 0.
+\end{equation}
+A practical initialization is $w_1=0.5$, $w_2=0.3$, and $w_3=0.2$, so that geometric clearance is treated as the dominant term.
+
+The three components are defined as follows.
+
+\paragraph{Clearance risk.}
+Let $m_{i,t}$ denote the current minimum candidate safety clearance (the same quantity used by the existing rule-based gate). Define
+\begin{equation}
+\xi_{i,t}^{\mathrm{clear}}
+=
+\mathrm{clip}\left(1-\frac{m_{i,t}}{M_c},0,1\right),
+\end{equation}
+where $M_c$ is a normalization constant.
+
+\paragraph{Region risk.}
+This term captures whether the agent is currently located in a locally risky area, such as near the boundary, close to threats, or inside a crowded UAV neighborhood. A simple form is
+\begin{equation}
+\xi_{i,t}^{\mathrm{region}}
+=
+\frac{\mathbb I_{\mathrm{boundary}} + \tilde n^{\mathrm{threat}}_{i,t} + \mathbb I_{\mathrm{crowded}}}{3},
+\end{equation}
+where $\tilde n^{\mathrm{threat}}_{i,t}$ is the normalized local threat count.
+
+\paragraph{History risk.}
+Let $W$ be a recent time window. Define the trigger-frequency term
+\begin{equation}
+\xi_{i,t}^{\mathrm{hist}}
+=
+\frac{1}{W} \sum_{\tau=t-W+1}^{t} \mathbb I_{\mathrm{shield}}(i,\tau),
+\end{equation}
+which reflects whether the current agent has been repeatedly corrected by the shield in the recent past.
+
+The key motivation for using these three terms first is computational: they are already available or cheaply computable from the current shield pipeline, so they do not require an additional expensive online enumeration of $A^{\mathrm{safe}}$.
+
+At the current stage, the risk score is primarily used to decide whether an agent should remain in one-step hard-safe mode or be upgraded to recursive-feasible checking. A simple scheduling rule is
+\begin{equation}
+\xi_{i,t} > \eta
+\quad \Rightarrow \quad
+\text{activate stronger shield logic for agent } i.
+\end{equation}
+This keeps the first risk-aware design tightly coupled to the current implementation.
+
+\paragraph{TODO items for later extensions.}
+Two additional terms are intentionally postponed:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Feasibility-proxy risk:}
+    \begin{equation}
+    \xi_{i,t}^{\mathrm{feas\mbox{-}proxy}} = 1 - \frac{|A_i^{\mathrm{rule}}(s_t)|}{|A_i|},
+    \end{equation}
+    or a top-$k$ survival-ratio variant.
+    \item \textbf{Uncertainty / preference-conflict risk:} based on whether the actor's preferred actions are rejected by the rule mask, or on a small action-gap / logit-gap indicator.
+\end{itemize}
+These terms are left as explicit TODOs because the first goal is to validate that the low-cost three-term score already provides useful scheduling behavior.
+
+\section{Recommended Theoretical Positioning}
+
+For the paper, the cleanest theoretical positioning is:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Hard safety layer}: one-step safety is always enforced through action-set filtering and actor-constrained re-selection.
+    \item \textbf{Conservativeness layer}: recursive-feasible and small-horizon look-ahead sets are used to strengthen future viability when needed.
+    \item \textbf{Scheduling layer}: training progress and online risk determine how strongly the stricter shield logic should intervene.
+\end{itemize}
+
+This positioning preserves a clear separation of roles: hard safety provides the basic guarantee, recursive-feasible and look-ahead shielding improve sustainable safety, and progressive/risk-aware scheduling controls how much conservativeness is injected during learning.
+
+\section{Summary}
+
+The main conclusions are as follows:
+\begin{enumerate}[label=(\arabic*),leftmargin=1.8em]
+    \item If the final executed action is always re-selected from an allowed set contained in $A^{\mathrm{safe}}(s_t)$, one-step safety can be guaranteed.
+    \item If the initial state is safe and the shield always returns a nonempty allowed set contained in $A^{\mathrm{safe}}(s_t)$, recursive safety follows by induction.
+    \item If prediction errors are bounded, robust safety can be recovered by tightening the shield constraints.
+    \item One-step recursive-feasible shielding and small-horizon look-ahead shielding strengthen \emph{sustainable safety} by avoiding immediate transitions into dead-end states.
+    \item Progressive and risk-aware scheduling should be interpreted as mechanisms for controlling conservativeness, intervention frequency, and action-space shrinkage --- not as permissions to violate hard safety.
+\end{enumerate}
+
+Therefore, the current research line is best summarized as a layered framework: one-step hard safety is always enforced, recursive-feasible and short-horizon viable sets improve future feasibility, and progressive/risk-aware scheduling determines how aggressively these stronger filters shape learning and execution.
+
+\section{Current Research Roadmap}
+
+The current plan is to keep the original three-point research line rather than switching the main contribution to learned safe masks. Concretely, the next scientific stages are:
+\begin{enumerate}[label=(\arabic*),leftmargin=1.8em]
+    \item establish formal baselines for \texttt{off}, \texttt{safe}, and \texttt{recursive};
+    \item formalize the current rule-based gate as a continuous risk function using the low-cost \emph{clear + region + hist} structure;
+    \item use this risk function to decide when the shield should escalate from one-step hard safety to recursive-feasible checking, and then replace the current greedy future-safe existence approximation with an $H=2$ small-horizon look-ahead shield;
+    \item introduce progressive conservativeness so that the shield evolves from one-step safety to recursive-feasible and then short-horizon viable filtering over training;
+    \item finally extend the system to full dual scheduling of intervention strength and action-space shrinkage.
+\end{enumerate}
+
+An important implementation lesson is that exact recursive shielding should not be naively expanded into full joint future-action enumeration at every step. However, this computational concern refines the \emph{implementation strategy}, not the main scientific direction. The main contribution remains the unified combination of progressive shielding, recursive-feasible / short-horizon viability maintenance, and risk-aware dual scheduling.
+
+\section{Comparison with Related Shielding Directions}
+
+Table~\ref{tab:related-work-comparison} summarizes the positioning of the proposed research direction against the most relevant shielding-related lines of work discussed during the literature scan. The goal is not to claim that shielding, look-ahead, or adaptivity are entirely new, but to clarify that the novelty should be placed on the \emph{unified combination} of training-progress-aware shielding, recursive-feasibility preservation, and risk-aware dual scheduling in the multi-UAV cooperative search setting.
+
+\begin{table}[htbp]
+\centering
+\caption{Comparison between the planned framework and closely related shielding directions}
+\label{tab:related-work-comparison}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{3.0cm} >{\raggedright\arraybackslash}p{3.1cm} >{\raggedright\arraybackslash}p{2.2cm} >{\raggedright\arraybackslash}p{2.2cm} >{\raggedright\arraybackslash}X}
+\toprule
+\textbf{Direction / Representative Work} & \textbf{Main Idea} & \textbf{Look-ahead Shield} & \textbf{Adaptive / Progressive Control} & \textbf{Main Difference from Planned Framework} \\
+\midrule
+Classical shielded RL & Use a shield to block unsafe actions before execution & Usually no & Usually fixed & Establishes the basic shielding idea, but does not address training-progress-aware intervention, recursive feasibility preservation, or multi-UAV search coupling. \\
+
+Dynamic multi-agent shielding \newline (e.g., model-based dynamic shielding for safe and efficient MARL, AAMAS 2023) & Dynamically construct/update shields in multi-agent settings; includes model-based and $k$-step look-ahead elements & Yes & Dynamic shield construction & This is the closest line. The planned framework should distinguish itself by emphasizing training-progress-aware intervention strength, action-space shrinkage scheduling, and recursive-feasibility-oriented control for multi-UAV target search. \\
+
+Decentralized / shield decentralization \newline (e.g., NeurIPS 2022) & Decompose or decentralize shielding for multi-agent execution & Not the main focus & Limited & Focuses on decentralized realizability of shields rather than progressive training control or feasibility-aware action-space shrinkage. \\
+
+POMDP / shield decomposition \newline (e.g., RLC 2024) & Extend shielding ideas to partially observable multi-agent environments & Not the main focus & Limited & Shares the partial-observability setting, but does not center on progressive scheduling or the preservation of future safe action availability. \\
+
+Adaptive shielding \newline (e.g., ADVICE, 2025) & Adjust shielding behavior based on learned safe/unsafe knowledge or black-box interaction & Partial & Yes & Related in spirit to adaptive safety intervention, but not specifically organized around dual scheduling of intervention strength and action-space conservativeness in cooperative UAV search. \\
+
+Adaptive robust MPC shielding \newline (e.g., adaptive robust model predictive shielding, 2025) & Use robust/model-predictive ideas to adapt safety margins or shielding conservativeness & Yes & Yes & Relevant to adaptive conservativeness, but more MPC/process-control oriented than MARL-oriented, and not directly focused on recursive-feasibility-preserving action pruning in multi-UAV search. \\
+
+Planned framework \newline (this work) & Unify progressive shielding, one-step recursive-feasible shielding, small-horizon look-ahead shielding, and risk-aware dual scheduling & Yes & Yes & Targets the exploration-safety-feasibility tradeoff jointly: early-stage exploration, late-stage safety strengthening, dead-end avoidance, and adaptive action-space shrinkage under multi-UAV cooperative search constraints. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Recommended positioning.}
+The planned work should avoid claiming that shielding, look-ahead shielding, or adaptive shielding are individually novel. Instead, the strongest positioning is that the contribution lies in a \emph{unified framework} that jointly addresses:
+\begin{itemize}[leftmargin=1.5em]
+    \item training-progress-aware exploration-safety balancing,
+    \item recursive-feasibility preservation to avoid dead-end states, and
+    \item risk-aware dual scheduling of intervention strength and action-space shrinkage
+\end{itemize}
+for multi-UAV cooperative search with moving targets and threats.
+
+\end{document}

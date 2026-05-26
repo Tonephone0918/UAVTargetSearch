@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from time import perf_counter
 from typing import Dict
 
@@ -14,6 +15,23 @@ def _finalize_metrics(metrics: Dict[str, list[float]]) -> Dict[str, float]:
     return {k: float(np.mean(v)) for k, v in metrics.items()}
 
 
+def _finalize_string_metrics(metrics: Dict[str, list[str]]) -> Dict[str, str]:
+    summary: Dict[str, str] = {}
+    for key, values in metrics.items():
+        if not values:
+            continue
+        summary[key] = Counter(values).most_common(1)[0][0]
+    return summary
+
+
+def _is_numeric_metric(value: object) -> bool:
+    return isinstance(value, (int, float, np.integer, np.floating))
+
+
+def _is_string_metric(value: object) -> bool:
+    return isinstance(value, str)
+
+
 @torch.no_grad()
 def evaluate(
     env,
@@ -23,6 +41,7 @@ def evaluate(
     shield: CentralizedSafetyShield | None = None,
 ) -> Dict[str, float]:
     metrics: Dict[str, list[float]] = {}
+    string_metrics: Dict[str, list[str]] = {}
     for _ in range(episodes):
         obs = env.reset()
         if shield is not None:
@@ -74,9 +93,12 @@ def evaluate(
         if shield is not None:
             episode_metrics.update(shield.profile_summary(episode_step_time, episode_stats_time))
         for key, value in episode_metrics.items():
-            metrics.setdefault(key, []).append(float(value))
+            if _is_numeric_metric(value):
+                metrics.setdefault(key, []).append(float(value))
+            elif _is_string_metric(value):
+                string_metrics.setdefault(key, []).append(value)
 
-    return _finalize_metrics(metrics)
+    return {**_finalize_metrics(metrics), **_finalize_string_metrics(string_metrics)}
 
 
 @torch.no_grad()
@@ -88,6 +110,7 @@ def evaluate_actor_policy(
     shield: CentralizedSafetyShield | None = None,
 ) -> Dict[str, float]:
     metrics: Dict[str, list[float]] = {}
+    string_metrics: Dict[str, list[str]] = {}
     for _ in range(episodes):
         obs = env.reset()
         if shield is not None:
@@ -134,5 +157,8 @@ def evaluate_actor_policy(
         if shield is not None:
             episode_metrics.update(shield.profile_summary(episode_step_time, episode_stats_time))
         for key, value in episode_metrics.items():
-            metrics.setdefault(key, []).append(float(value))
-    return _finalize_metrics(metrics)
+            if _is_numeric_metric(value):
+                metrics.setdefault(key, []).append(float(value))
+            elif _is_string_metric(value):
+                string_metrics.setdefault(key, []).append(value)
+    return {**_finalize_metrics(metrics), **_finalize_string_metrics(string_metrics)}

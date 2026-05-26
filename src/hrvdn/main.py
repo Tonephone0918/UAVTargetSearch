@@ -56,7 +56,7 @@ def main():
     p.add_argument(
         "--normalize-dpm-reward",
         action=argparse.BooleanOptionalAction,
-        default=None,
+        default=True,
         help="Normalize the DPM reward by n_uavs * map_size * map_size. Enabled by default.",
     )
     p.add_argument("--map-size", type=int, default=None)
@@ -133,6 +133,12 @@ def main():
         help="Recursive gate mode: full runs A_rec every step, risk gates by score, legacy keeps the old heuristic gate.",
     )
     p.add_argument(
+        "--shield-hard-solver-mode",
+        choices=["sequential", "exact", "sequential_with_exact_rescue"],
+        default=None,
+        help="A_hard solver mode: sequential baseline, exact joint oracle, or sequential baseline with exact rescue when sequential A_hard is empty.",
+    )
+    p.add_argument(
         "--shield-dead-end-policy",
         choices=["fail_closed", "emergency"],
         default=None,
@@ -160,19 +166,49 @@ def main():
         "--shield-future-witness-mode",
         choices=["single", "base_plus_clearance"],
         default=None,
-        help="Witness proposal mode for the H=1 recursive feasibility checker.",
+        help="Witness proposal mode for the recursive / look-ahead feasibility checker.",
     )
     p.add_argument(
         "--shield-future-beam-width",
         type=int,
         default=None,
-        help="Small beam width used by the recursive future-safe checker.",
+        help="Small beam width used by the recursive / look-ahead future-safe checker.",
     )
     p.add_argument(
         "--shield-future-witness-top-k",
         type=int,
         default=None,
         help="How many top-clearance future witnesses to keep before beam pruning.",
+    )
+    p.add_argument(
+        "--shield-future-hard-solver-mode",
+        choices=["sequential", "exact", "sequential_with_exact_rescue"],
+        default=None,
+        help="Future-node A_hard solver mode used inside look-ahead feasibility checking.",
+    )
+    p.add_argument(
+        "--shield-future-refine-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow future-node A_hard enumeration to use the gray-zone refine pass.",
+    )
+    p.add_argument(
+        "--shield-future-exact-rescue-max-sequential-size",
+        type=int,
+        default=None,
+        help="In future nodes, trigger exact rescue when the sequential A_hard set size is at most this value.",
+    )
+    p.add_argument(
+        "--shield-future-exact-rescue-risk-trigger",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="In future nodes, also trigger exact rescue in locally risky regions.",
+    )
+    p.add_argument(
+        "--shield-future-branch-score-mode",
+        choices=["clearance_support", "viability"],
+        default=None,
+        help="Future-branch ranking mode inside the look-ahead beam search.",
     )
     p.add_argument(
         "--shield-risk-variant",
@@ -300,19 +336,110 @@ def main():
         "--shield-progressive-enabled",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Reserved hook for later progressive shielding work.",  
+        help="Enable the training-time progressive shielding schedule while keeping A_hard always-on.",  
+    )
+    p.add_argument(
+        "--shield-progressive-early-mode",
+        type=str,
+        choices=["safe", "recursive"],
+        default=None,
+        help="Early progressive stage mode: 'safe' keeps hard-safe-only A_hard filtering, while 'recursive' preserves the older early recursive gate behavior.",
+    )
+    p.add_argument(
+        "--shield-progressive-early-end-ratio",
+        type=float,
+        default=None,
+        help="Training-progress ratio where the early weak stronger-layer stage ends.",
+    )
+    p.add_argument(
+        "--shield-progressive-late-start-ratio",
+        type=float,
+        default=None,
+        help="Training-progress ratio where the late stronger stage begins.",
+    )
+    p.add_argument(
+        "--shield-progressive-early-risk-threshold",
+        type=float,
+        default=None,
+        help="Risk threshold used by the early weak stronger-layer stage.",
+    )
+    p.add_argument(
+        "--shield-progressive-mid-risk-threshold",
+        type=float,
+        default=None,
+        help="Risk threshold used by the mid training stage; defaults to the current H=1 formal setting.",
+    )
+    p.add_argument(
+        "--shield-progressive-late-risk-threshold",
+        type=float,
+        default=None,
+        help="Risk threshold used by the late training stage.",
+    )
+    p.add_argument(
+        "--shield-progressive-mid-lookahead-horizon",
+        type=int,
+        default=None,
+        help="Look-ahead horizon used by the mid training stage; defaults to the current H=1 formal setting.",
+    )
+    p.add_argument(
+        "--shield-progressive-late-lookahead-horizon",
+        type=int,
+        default=None,
+        help="Look-ahead horizon used by the late training stage.",
     )
     p.add_argument( 
         "--shield-lookahead-horizon",
         type=int,
         default=None,
-        help="Reserved hook for later look-ahead shielding work.",
+        help="Look-ahead horizon for the stronger recursive feasibility layer. 1 keeps the current A_rec semantics; 2 enables small-horizon look-ahead.",
     )
     p.add_argument(
         "--shield-risk-schedule-enabled",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Reserved hook for later risk-aware scheduling work.",
+    )
+    p.add_argument(
+        "--shield-dual-schedule-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable the minimal dual scheduling runtime threshold adjustment on top of the progressive base threshold.",
+    )
+    p.add_argument(
+        "--shield-dual-schedule-low-risk-max",
+        type=float,
+        default=None,
+        help="Risk score upper bound for the low-risk band used by dual scheduling.",
+    )
+    p.add_argument(
+        "--shield-dual-schedule-high-risk-min",
+        type=float,
+        default=None,
+        help="Risk score lower bound for the high-risk band used by dual scheduling.",
+    )
+    p.add_argument(
+        "--shield-dual-schedule-low-risk-margin",
+        type=float,
+        default=None,
+        help="How much to relax the base threshold in the low-risk band.",
+    )
+    p.add_argument(
+        "--shield-dual-schedule-high-risk-margin",
+        type=float,
+        default=None,
+        help="How much to tighten the base threshold in the high-risk band.",
+    )
+    p.add_argument(
+        "--shield-dual-schedule-threshold-min",
+        type=float,
+        default=None,
+        help="Lower clip bound for the runtime-adjusted recursive gate threshold.",
+    )
+    p.add_argument(
+        "--shield-dual-schedule-threshold-max",
+        type=float,
+        default=None,
+        help="Upper clip bound for the runtime-adjusted recursive gate threshold.",
     )
     p.add_argument("--resume", type=str, default=None, help="Path to checkpoint, e.g. checkp oints/latest.pt")
     p.add_argument("--checkpoint-dir", type=str, default=None, help="Directory for saved checkpoints.")
@@ -401,6 +528,8 @@ def main():
     if args.shield_recursive_gate_mode is not None:
         cfg.shield.recursive_gate_mode = args.shield_recursive_gate_mode
         cfg.shield.legacy_recursive_gate = args.shield_recursive_gate_mode == "legacy"
+    if args.shield_hard_solver_mode is not None:
+        cfg.shield.hard_solver_mode = args.shield_hard_solver_mode
     if args.shield_dead_end_policy is not None:
         cfg.shield.dead_end_policy = args.shield_dead_end_policy
     if args.shield_adjudication_order is not None:
@@ -415,6 +544,16 @@ def main():
         cfg.shield.future_beam_width = args.shield_future_beam_width
     if args.shield_future_witness_top_k is not None:
         cfg.shield.future_witness_top_k = args.shield_future_witness_top_k
+    if args.shield_future_hard_solver_mode is not None:
+        cfg.shield.future_hard_solver_mode = args.shield_future_hard_solver_mode
+    if args.shield_future_refine_enabled is not None:
+        cfg.shield.future_refine_enabled = args.shield_future_refine_enabled
+    if args.shield_future_exact_rescue_max_sequential_size is not None:
+        cfg.shield.future_exact_rescue_max_sequential_size = args.shield_future_exact_rescue_max_sequential_size
+    if args.shield_future_exact_rescue_risk_trigger is not None:
+        cfg.shield.future_exact_rescue_risk_trigger = args.shield_future_exact_rescue_risk_trigger
+    if args.shield_future_branch_score_mode is not None:
+        cfg.shield.future_branch_score_mode = args.shield_future_branch_score_mode
     if args.shield_risk_variant is not None:
         cfg.shield.risk_variant = canonicalize_risk_variant(args.shield_risk_variant)
     if args.shield_risk_weight_clear is not None:
@@ -455,10 +594,40 @@ def main():
         cfg.shield.legacy_recursive_gate = args.shield_legacy_recursive_gate
     if args.shield_progressive_enabled is not None:
         cfg.shield.progressive_enabled = args.shield_progressive_enabled
+    if args.shield_progressive_early_mode is not None:
+        cfg.shield.progressive_early_mode = args.shield_progressive_early_mode
+    if args.shield_progressive_early_end_ratio is not None:
+        cfg.shield.progressive_early_end_ratio = args.shield_progressive_early_end_ratio
+    if args.shield_progressive_late_start_ratio is not None:
+        cfg.shield.progressive_late_start_ratio = args.shield_progressive_late_start_ratio
+    if args.shield_progressive_early_risk_threshold is not None:
+        cfg.shield.progressive_early_risk_threshold = args.shield_progressive_early_risk_threshold
+    if args.shield_progressive_mid_risk_threshold is not None:
+        cfg.shield.progressive_mid_risk_threshold = args.shield_progressive_mid_risk_threshold
+    if args.shield_progressive_late_risk_threshold is not None:
+        cfg.shield.progressive_late_risk_threshold = args.shield_progressive_late_risk_threshold
+    if args.shield_progressive_mid_lookahead_horizon is not None:
+        cfg.shield.progressive_mid_lookahead_horizon = args.shield_progressive_mid_lookahead_horizon
+    if args.shield_progressive_late_lookahead_horizon is not None:
+        cfg.shield.progressive_late_lookahead_horizon = args.shield_progressive_late_lookahead_horizon
     if args.shield_lookahead_horizon is not None:
         cfg.shield.lookahead_horizon = args.shield_lookahead_horizon
     if args.shield_risk_schedule_enabled is not None:
         cfg.shield.risk_schedule_enabled = args.shield_risk_schedule_enabled
+    if args.shield_dual_schedule_enabled is not None:
+        cfg.shield.dual_schedule_enabled = args.shield_dual_schedule_enabled
+    if args.shield_dual_schedule_low_risk_max is not None:
+        cfg.shield.dual_schedule_low_risk_max = args.shield_dual_schedule_low_risk_max
+    if args.shield_dual_schedule_high_risk_min is not None:
+        cfg.shield.dual_schedule_high_risk_min = args.shield_dual_schedule_high_risk_min
+    if args.shield_dual_schedule_low_risk_margin is not None:
+        cfg.shield.dual_schedule_low_risk_margin = args.shield_dual_schedule_low_risk_margin
+    if args.shield_dual_schedule_high_risk_margin is not None:
+        cfg.shield.dual_schedule_high_risk_margin = args.shield_dual_schedule_high_risk_margin
+    if args.shield_dual_schedule_threshold_min is not None:
+        cfg.shield.dual_schedule_threshold_min = args.shield_dual_schedule_threshold_min
+    if args.shield_dual_schedule_threshold_max is not None:
+        cfg.shield.dual_schedule_threshold_max = args.shield_dual_schedule_threshold_max
     apply_env_overrides(
         cfg,
         map_size=args.map_size,
@@ -501,6 +670,8 @@ def main():
     if args.shield_recursive_gate_mode is not None:
         shield_override_kwargs["recursive_gate_mode"] = cfg.shield.recursive_gate_mode
         shield_override_kwargs["legacy_recursive_gate"] = cfg.shield.legacy_recursive_gate
+    if args.shield_hard_solver_mode is not None:
+        shield_override_kwargs["hard_solver_mode"] = cfg.shield.hard_solver_mode
     if args.shield_dead_end_policy is not None:
         shield_override_kwargs["dead_end_policy"] = cfg.shield.dead_end_policy
     if args.shield_adjudication_order is not None:
@@ -515,6 +686,16 @@ def main():
         shield_override_kwargs["future_beam_width"] = cfg.shield.future_beam_width
     if args.shield_future_witness_top_k is not None:
         shield_override_kwargs["future_witness_top_k"] = cfg.shield.future_witness_top_k
+    if args.shield_future_hard_solver_mode is not None:
+        shield_override_kwargs["future_hard_solver_mode"] = cfg.shield.future_hard_solver_mode
+    if args.shield_future_refine_enabled is not None:
+        shield_override_kwargs["future_refine_enabled"] = cfg.shield.future_refine_enabled
+    if args.shield_future_exact_rescue_max_sequential_size is not None:
+        shield_override_kwargs["future_exact_rescue_max_sequential_size"] = cfg.shield.future_exact_rescue_max_sequential_size
+    if args.shield_future_exact_rescue_risk_trigger is not None:
+        shield_override_kwargs["future_exact_rescue_risk_trigger"] = cfg.shield.future_exact_rescue_risk_trigger
+    if args.shield_future_branch_score_mode is not None:
+        shield_override_kwargs["future_branch_score_mode"] = cfg.shield.future_branch_score_mode
     if args.shield_risk_variant is not None:
         shield_override_kwargs["risk_variant"] = cfg.shield.risk_variant
     if args.shield_risk_weight_clear is not None:
@@ -555,10 +736,40 @@ def main():
         shield_override_kwargs["legacy_recursive_gate"] = cfg.shield.legacy_recursive_gate
     if args.shield_progressive_enabled is not None:
         shield_override_kwargs["progressive_enabled"] = cfg.shield.progressive_enabled
+    if args.shield_progressive_early_mode is not None:
+        shield_override_kwargs["progressive_early_mode"] = cfg.shield.progressive_early_mode
+    if args.shield_progressive_early_end_ratio is not None:
+        shield_override_kwargs["progressive_early_end_ratio"] = cfg.shield.progressive_early_end_ratio
+    if args.shield_progressive_late_start_ratio is not None:
+        shield_override_kwargs["progressive_late_start_ratio"] = cfg.shield.progressive_late_start_ratio
+    if args.shield_progressive_early_risk_threshold is not None:
+        shield_override_kwargs["progressive_early_risk_threshold"] = cfg.shield.progressive_early_risk_threshold
+    if args.shield_progressive_mid_risk_threshold is not None:
+        shield_override_kwargs["progressive_mid_risk_threshold"] = cfg.shield.progressive_mid_risk_threshold
+    if args.shield_progressive_late_risk_threshold is not None:
+        shield_override_kwargs["progressive_late_risk_threshold"] = cfg.shield.progressive_late_risk_threshold
+    if args.shield_progressive_mid_lookahead_horizon is not None:
+        shield_override_kwargs["progressive_mid_lookahead_horizon"] = cfg.shield.progressive_mid_lookahead_horizon
+    if args.shield_progressive_late_lookahead_horizon is not None:
+        shield_override_kwargs["progressive_late_lookahead_horizon"] = cfg.shield.progressive_late_lookahead_horizon
     if args.shield_lookahead_horizon is not None:
         shield_override_kwargs["lookahead_horizon"] = cfg.shield.lookahead_horizon
     if args.shield_risk_schedule_enabled is not None:
         shield_override_kwargs["risk_schedule_enabled"] = cfg.shield.risk_schedule_enabled
+    if args.shield_dual_schedule_enabled is not None:
+        shield_override_kwargs["dual_schedule_enabled"] = cfg.shield.dual_schedule_enabled
+    if args.shield_dual_schedule_low_risk_max is not None:
+        shield_override_kwargs["dual_schedule_low_risk_max"] = cfg.shield.dual_schedule_low_risk_max
+    if args.shield_dual_schedule_high_risk_min is not None:
+        shield_override_kwargs["dual_schedule_high_risk_min"] = cfg.shield.dual_schedule_high_risk_min
+    if args.shield_dual_schedule_low_risk_margin is not None:
+        shield_override_kwargs["dual_schedule_low_risk_margin"] = cfg.shield.dual_schedule_low_risk_margin
+    if args.shield_dual_schedule_high_risk_margin is not None:
+        shield_override_kwargs["dual_schedule_high_risk_margin"] = cfg.shield.dual_schedule_high_risk_margin
+    if args.shield_dual_schedule_threshold_min is not None:
+        shield_override_kwargs["dual_schedule_threshold_min"] = cfg.shield.dual_schedule_threshold_min
+    if args.shield_dual_schedule_threshold_max is not None:
+        shield_override_kwargs["dual_schedule_threshold_max"] = cfg.shield.dual_schedule_threshold_max
 
     if args.animate_checkpoint and args.animate_baseline:
         raise ValueError("Please choose either --animate-checkpoint or --animate-baseline, not both.")

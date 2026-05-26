@@ -21,6 +21,12 @@ from .stats import EpisodeStatsAccumulator, SummaryCSVLogger, log_summary_scalar
 
 
 class MAPPOTrainer:
+    @staticmethod
+    def _checkpoint_metric_value(value: object) -> object:
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return float(value)
+        return value
+
     def __init__(self, cfg: ExperimentConfig, device: str = "auto"):
         self.cfg = cfg
         self.device = self._resolve_device(device)
@@ -36,8 +42,20 @@ class MAPPOTrainer:
         self.ckpt_dir = Path(cfg.train.checkpoint_dir)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
         self.best_search_rate = float("-inf")
-        self.best_metrics: Dict[str, float] | None = None
-        self.shield = CentralizedSafetyShield(cfg)
+        self.best_metrics: Dict[str, object] | None = None
+        self.shield_cfg = deepcopy(cfg)
+        self.shield = CentralizedSafetyShield(self.shield_cfg)
+        self.progressive_state: Dict[str, object] = {
+            "stage": "fixed",
+            "stage_id": 0.0,
+            "progress": 0.0,
+            "mode": str(self.shield_cfg.shield.mode),
+            "lookahead_horizon": int(self.shield_cfg.shield.lookahead_horizon),
+            "risk_threshold": float(self.shield_cfg.shield.risk_threshold),
+            "base_risk_threshold": float(self.shield_cfg.shield.risk_threshold),
+            "dual_schedule_enabled": bool(self.shield_cfg.shield.dual_schedule_enabled),
+        }
+        self._last_progressive_signature: tuple[str, str, int, float] | None = None
         self.summary_logger = SummaryCSVLogger(cfg.train.tensorboard_dir)
         self.writer = None
         print(
@@ -51,6 +69,21 @@ class MAPPOTrainer:
             f"exact_diag={cfg.shield.exact_diagnostics_enabled} "
             f"progressive={cfg.shield.progressive_enabled}"
         )
+        if cfg.shield.progressive_enabled:
+            print(
+                "[MAPPOTrainer] progressive schedule "
+                f"early(mode={cfg.shield.progressive_early_mode}, H=1, eta={cfg.shield.progressive_early_risk_threshold:.3f}, end={cfg.shield.progressive_early_end_ratio:.2f}) "
+                f"mid(mode=recursive, H={cfg.shield.progressive_mid_lookahead_horizon}, eta={cfg.shield.progressive_mid_risk_threshold:.3f}) "
+                f"late(mode=recursive, H={cfg.shield.progressive_late_lookahead_horizon}, eta={cfg.shield.progressive_late_risk_threshold:.3f}, start={cfg.shield.progressive_late_start_ratio:.2f})"
+            )
+        if cfg.shield.dual_schedule_enabled:
+            print(
+                "[MAPPOTrainer] dual schedule "
+                f"low(score<{cfg.shield.dual_schedule_low_risk_max:.2f}, eta+= {cfg.shield.dual_schedule_low_risk_margin:.2f}) "
+                f"mid(base eta) "
+                f"high(score>={cfg.shield.dual_schedule_high_risk_min:.2f}, eta-= {cfg.shield.dual_schedule_high_risk_margin:.2f}) "
+                f"clip=[{cfg.shield.dual_schedule_threshold_min:.2f}, {cfg.shield.dual_schedule_threshold_max:.2f}]"
+            )
         if cfg.train.use_tensorboard:
             try:
                 from torch.utils.tensorboard import SummaryWriter
@@ -90,7 +123,7 @@ class MAPPOTrainer:
         return epoch >= self.cfg.train.dense_epochs
 
     @staticmethod
-    def _better_metrics(candidate: Dict[str, float], incumbent: Dict[str, float] | None) -> bool:
+    def _better_metrics(candidate: Dict[str, float], incumbent: Dict[str, object] | None) -> bool:
         if incumbent is None:
             return True
 
@@ -124,6 +157,97 @@ class MAPPOTrainer:
             seed=self.cfg.train.seed + 10_000,
         )
 
+    def _make_eval_shield(self) -> CentralizedSafetyShield:
+        return CentralizedSafetyShield(deepcopy(self.shield_cfg))
+
+    def _progressive_progress(self, epoch: int, total_epochs: int) -> float:
+        if total_epochs <= 1:
+            return 1.0
+        return float(epoch / max(total_epochs - 1, 1))
+
+    def _apply_progressive_schedule(self, epoch: int, total_epochs: int) -> Dict[str, object]:
+        progress = self._progressive_progress(epoch, total_epochs)
+        shield_cfg = self.shield_cfg.shield
+
+        if not self.cfg.shield.progressive_enabled or self.cfg.shield.mode != "recursive":
+            stage = "fixed"
+            stage_id = 0.0
+            mode = str(self.cfg.shield.mode)
+            lookahead_horizon = int(self.cfg.shield.lookahead_horizon)
+            risk_threshold = float(self.cfg.shield.risk_threshold)
+        else:
+            if progress < float(self.cfg.shield.progressive_early_end_ratio):
+                stage = "early"
+                stage_id = 1.0
+                mode = str(self.cfg.shield.progressive_early_mode)
+                lookahead_horizon = 1
+                risk_threshold = float(self.cfg.shield.progressive_early_risk_threshold)
+            elif progress < float(self.cfg.shield.progressive_late_start_ratio):
+                stage = "mid"
+                stage_id = 2.0
+                mode = "recursive"
+                lookahead_horizon = int(self.cfg.shield.progressive_mid_lookahead_horizon)
+                risk_threshold = float(self.cfg.shield.progressive_mid_risk_threshold)
+            else:
+                stage = "late"
+                stage_id = 3.0
+                mode = "recursive"
+                lookahead_horizon = int(self.cfg.shield.progressive_late_lookahead_horizon)
+                risk_threshold = float(self.cfg.shield.progressive_late_risk_threshold)
+
+        shield_cfg.progressive_enabled = bool(self.cfg.shield.progressive_enabled)
+        shield_cfg.dual_schedule_enabled = bool(self.cfg.shield.dual_schedule_enabled)
+        shield_cfg.mode = str(mode)
+        shield_cfg.lookahead_horizon = max(1, int(lookahead_horizon))
+        shield_cfg.risk_threshold = float(risk_threshold)
+        self.progressive_state = {
+            "stage": stage,
+            "stage_id": float(stage_id),
+            "progress": float(progress),
+            "mode": str(shield_cfg.mode),
+            "lookahead_horizon": int(shield_cfg.lookahead_horizon),
+            "risk_threshold": float(shield_cfg.risk_threshold),
+            "base_risk_threshold": float(shield_cfg.risk_threshold),
+            "dual_schedule_enabled": bool(shield_cfg.dual_schedule_enabled),
+        }
+
+        signature = (
+            str(self.progressive_state["stage"]),
+            str(self.progressive_state["mode"]),
+            int(self.progressive_state["lookahead_horizon"]),
+            round(float(self.progressive_state["risk_threshold"]), 6),
+        )
+        if signature != self._last_progressive_signature:
+            print(
+                "[MAPPOTrainer] progressive "
+                f"epoch={epoch} progress={progress:.3f} "
+                f"stage={self.progressive_state['stage']} "
+                f"mode={self.progressive_state['mode']} "
+                f"H={self.progressive_state['lookahead_horizon']} "
+                f"eta={self.progressive_state['risk_threshold']:.3f} "
+                f"dual={int(bool(self.progressive_state['dual_schedule_enabled']))}"
+            )
+            self._last_progressive_signature = signature
+        return self.progressive_state
+
+    def _progressive_metric_fields(self) -> Dict[str, float]:
+        return {
+            "progressive_enabled": float(self.cfg.shield.progressive_enabled),
+            "progressive_stage_id": float(self.progressive_state["stage_id"]),
+            "progressive_progress": float(self.progressive_state["progress"]),
+            "effective_lookahead_horizon": float(self.progressive_state["lookahead_horizon"]),
+            "effective_base_risk_threshold": float(self.progressive_state["base_risk_threshold"]),
+            "effective_risk_threshold": float(self.progressive_state["risk_threshold"]),
+            "dual_schedule_enabled": float(self.progressive_state["dual_schedule_enabled"]),
+        }
+
+    def _progressive_log_fields(self) -> Dict[str, object]:
+        return {
+            "progressive_stage": str(self.progressive_state["stage"]),
+            "effective_shield_mode": str(self.progressive_state["mode"]),
+            **self._progressive_metric_fields(),
+        }
+
     def _save_checkpoint(self, name: str, epoch: int, metrics: Dict[str, float] | None = None) -> Path:
         path = self.ckpt_dir / name
         payload = {
@@ -152,7 +276,7 @@ class MAPPOTrainer:
         self.best_search_rate = float(ckpt.get("best_search_rate", self.best_search_rate))
         loaded_best_metrics = ckpt.get("best_metrics")
         if loaded_best_metrics:
-            self.best_metrics = {k: float(v) for k, v in loaded_best_metrics.items()}
+            self.best_metrics = {k: self._checkpoint_metric_value(v) for k, v in loaded_best_metrics.items()}
             self.best_search_rate = float(self.best_metrics.get("search_rate", self.best_search_rate))
         elif np.isfinite(self.best_search_rate):
             self.best_metrics = {"search_rate": self.best_search_rate}
@@ -237,7 +361,7 @@ class MAPPOTrainer:
         info_out = episode_stats.finalize(
             last_info,
             found_targets=len(self.env.found_targets),
-            shield_mode=self.cfg.shield.mode,
+            shield_mode=self.shield_cfg.shield.mode,
         )
         info_out.update(self.shield.profile_summary(episode_step_time, episode_stats_time))
         info_out["episode_steps"] = float(len(rewards))
@@ -369,7 +493,11 @@ class MAPPOTrainer:
             elif ep == start_epoch:
                 self._set_phase_lr(sparse=self._in_sparse_phase(ep))
 
+            self._apply_progressive_schedule(ep, total_epochs)
             batch, info = self._collect_episode()
+            progressive_metrics = self._progressive_metric_fields()
+            progressive_fields = self._progressive_log_fields()
+            info = {**info, **progressive_metrics}
             losses = self._ppo_update(batch)
             phase = "dense" if ep < self.cfg.train.dense_epochs else "sparse"
             self.summary_logger.append(
@@ -377,14 +505,14 @@ class MAPPOTrainer:
                     "split": "train",
                     "epoch": ep,
                     "phase": phase,
-                    "mode": self.cfg.shield.mode,
+                    "mode": self.shield_cfg.shield.mode,
                     "hard_solver_mode": self.cfg.shield.hard_solver_mode,
                     "recursive_gate_mode": self.cfg.shield.recursive_gate_mode,
                     "dead_end_policy": self.cfg.shield.dead_end_policy,
                     "risk_variant": self.cfg.shield.risk_variant,
                     "exact_diagnostics_enabled": float(self.cfg.shield.exact_diagnostics_enabled),
-                    "progressive_enabled": float(self.cfg.shield.progressive_enabled),
                     "episodes": 1,
+                    **progressive_fields,
                     **info,
                 }
             )
@@ -401,6 +529,10 @@ class MAPPOTrainer:
                 f"epoch={ep} phase={phase} return={info['episode_return']:.3f} "
                 f"orig_return={info['original_episode_return']:.3f} "
                 f"actor_loss={losses['actor_loss']:.6f} critic_loss={losses['critic_loss']:.6f} "
+                f"prog={progressive_fields['progressive_stage']} mode={progressive_fields['effective_shield_mode']} "
+                f"H={info['effective_lookahead_horizon']:.0f} base_eta={info['effective_base_risk_threshold']:.3f} "
+                f"runtime_eta={info.get('effective_runtime_risk_threshold', info['effective_risk_threshold']):.3f} "
+                f"band={info.get('dual_risk_band_dominant', 'inactive')} "
                 f"search={info['search_rate']:.3f} coverage={info['coverage_ratio']:.3f} "
                 f"collisions={info['collision_count']:.0f} trigger_rate={info['shield_trigger_rate']:.3f} "
                 f"near_miss={info['near_miss_rate']:.3f} "
@@ -409,31 +541,32 @@ class MAPPOTrainer:
 
             if ep % 50 == 0:
                 eval_env = self._make_eval_env()
-                m = evaluate_actor_policy(eval_env, self.actor, episodes=5, device=self.device, shield=CentralizedSafetyShield(self.cfg))
-                history.append((ep, m))
+                m = evaluate_actor_policy(eval_env, self.actor, episodes=5, device=self.device, shield=self._make_eval_shield())
+                m_with_progressive = {**m, **progressive_metrics}
+                history.append((ep, m_with_progressive))
                 self.summary_logger.append(
                     {
                         "split": "eval",
                         "epoch": ep,
                         "phase": phase,
-                        "mode": self.cfg.shield.mode,
+                        "mode": self.shield_cfg.shield.mode,
                         "hard_solver_mode": self.cfg.shield.hard_solver_mode,
                         "recursive_gate_mode": self.cfg.shield.recursive_gate_mode,
                         "dead_end_policy": self.cfg.shield.dead_end_policy,
                         "risk_variant": self.cfg.shield.risk_variant,
                         "exact_diagnostics_enabled": float(self.cfg.shield.exact_diagnostics_enabled),
-                        "progressive_enabled": float(self.cfg.shield.progressive_enabled),
                         "episodes": 5,
+                        **progressive_fields,
                         **m,
                     }
                 )
-                print(f"epoch={ep} metrics={m}")
+                print(f"epoch={ep} metrics={m_with_progressive}")
                 if self.writer is not None:
-                    log_summary_scalars(self.writer, "eval", m, ep)
-                if self.cfg.train.save_best and self._better_metrics(m, self.best_metrics):
-                    self.best_metrics = {k: float(v) for k, v in m.items()}
-                    self.best_search_rate = m["search_rate"]
-                    self._save_checkpoint("best.pt", ep, m)
+                    log_summary_scalars(self.writer, "eval", m_with_progressive, ep)
+                if self.cfg.train.save_best and self._better_metrics(m_with_progressive, self.best_metrics):
+                    self.best_metrics = {k: self._checkpoint_metric_value(v) for k, v in m_with_progressive.items()}
+                    self.best_search_rate = m_with_progressive["search_rate"]
+                    self._save_checkpoint("best.pt", ep, m_with_progressive)
 
             if self.cfg.train.save_every > 0 and ep % self.cfg.train.save_every == 0:
                 self._save_checkpoint(f"epoch_{ep}.pt", ep)

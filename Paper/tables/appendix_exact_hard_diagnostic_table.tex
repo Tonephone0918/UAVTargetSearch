@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\caption{Appendix diagnostics for exact/projected \texttt{A\_hard}. The exact/projected view is a semantic reference for diagnosing sequential approximation errors. Sequential construction is an online engineering approximation, and the diagnostic rates should not be interpreted as a separate main result.}
+\label{tab:appendix-exact-hard}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+Setting & False empty & False nonempty & Rescue count & Guarantee & Rec. dead-end \\
+\midrule
+\texttt{safe\_sequential} & 0.1390 & 0.4166 & 0.00 & 0.5604 & 0.0000 \\
+\texttt{safe\_rescue} & 0.2093 & 0.3808 & 28.25 & 0.4292 & 0.0000 \\
+\texttt{recursive\_risk\_sequential} & 0.1706 & 0.4186 & 0.00 & 0.5646 & 0.4167 \\
+\texttt{recursive\_risk\_rescue} & 0.2606 & 0.3206 & 33.25 & 0.3688 & 0.4479 \\
+\bottomrule
+\end{tabular}
+\end{table}

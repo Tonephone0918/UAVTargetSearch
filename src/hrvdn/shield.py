@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-import  
+import torch
 from torch.distributions import Categorical
 
 from .config import ExperimentConfig, canonicalize_risk_variant
@@ -50,6 +50,10 @@ class CentralizedSafetyShield:
         return bool(self.cfg.shield.risk_score_enabled)
 
     @property
+    def dual_schedule_enabled(self) -> bool:
+        return bool(getattr(self.cfg.shield, "dual_schedule_enabled", False))
+
+    @property
     def recursive_gate_mode(self) -> str:
         if bool(getattr(self.cfg.shield, "legacy_recursive_gate", False)):
             return "legacy"
@@ -66,6 +70,10 @@ class CentralizedSafetyShield:
         if mode not in {"sequential", "exact", "sequential_with_exact_rescue"}:
             return "sequential"
         return mode
+
+    @property
+    def lookahead_horizon(self) -> int:
+        return max(1, int(getattr(self.cfg.shield, "lookahead_horizon", 1)))
 
     @property
     def dead_end_policy(self) -> str:
@@ -104,6 +112,32 @@ class CentralizedSafetyShield:
     def future_witness_top_k(self) -> int:
         return max(1, int(getattr(self.cfg.shield, "future_witness_top_k", 2)))
 
+    @property
+    def future_hard_solver_mode(self) -> str:
+        mode = str(getattr(self.cfg.shield, "future_hard_solver_mode", "sequential"))
+        if mode not in {"sequential", "exact", "sequential_with_exact_rescue"}:
+            return "sequential"
+        return mode
+
+    @property
+    def future_refine_enabled(self) -> bool:
+        return bool(getattr(self.cfg.shield, "future_refine_enabled", False))
+
+    @property
+    def future_exact_rescue_max_sequential_size(self) -> int:
+        return max(0, int(getattr(self.cfg.shield, "future_exact_rescue_max_sequential_size", 0)))
+
+    @property
+    def future_exact_rescue_risk_trigger(self) -> bool:
+        return bool(getattr(self.cfg.shield, "future_exact_rescue_risk_trigger", False))
+
+    @property
+    def future_branch_score_mode(self) -> str:
+        mode = str(getattr(self.cfg.shield, "future_branch_score_mode", "clearance_support"))
+        if mode not in {"clearance_support", "viability"}:
+            return "clearance_support"
+        return mode
+
     def reset_episode(self) -> None:
         self.shield_trigger_count = 0
         self.shield_agent_trigger_count = 0
@@ -129,6 +163,7 @@ class CentralizedSafetyShield:
             "rule_mask_time": 0.0,
             "predict_time": 0.0,
             "recursive_time": 0.0,
+            "recursive_work_time": 0.0,
             "refine_time": 0.0,
             "predict_cache_queries": 0.0,
             "predict_cache_hits": 0.0,
@@ -142,6 +177,7 @@ class CentralizedSafetyShield:
             "recursive_gate_step_skips": 0.0,
             "recursive_candidate_checks": 0.0,
         }
+        self._recursive_profile_depth = 0
         self._reset_step_counters()
 
     def _reset_step_counters(self) -> None:
@@ -150,6 +186,11 @@ class CentralizedSafetyShield:
         self._step_future_witness_branches = 0
         self._step_future_beam_width_sum = 0.0
         self._step_future_beam_calls = 0
+        self._step_future_exact_query_count = 0
+        self._step_future_exact_rescue_count = 0
+        self._step_future_exact_false_empty_count = 0
+        self._step_future_exact_pruned_nonempty_count = 0
+        self._step_future_beam_pruned_branch_count = 0.0
         self._step_exact_hard_queries = 0
         self._step_exact_hard_feasible = 0
         self._step_exact_hard_rescues = 0
@@ -165,6 +206,7 @@ class CentralizedSafetyShield:
         rule_mask_time = float(self.profile["rule_mask_time"])
         predict_time = float(self.profile["predict_time"])
         recursive_time = float(self.profile["recursive_time"])
+        recursive_work_time = float(self.profile["recursive_work_time"])
         refine_time = float(self.profile["refine_time"])
         stats_time = float(stats_time)
         total_step_time = float(total_step_time)
@@ -178,6 +220,7 @@ class CentralizedSafetyShield:
             "perf_refine_time_ms": 1000.0 * refine_time / steps, 
             "perf_predict_time_ms": 1000.0 * predict_time / steps,
             "perf_recursive_time_ms": 1000.0 * recursive_time / steps,
+            "perf_recursive_work_time_ms": 1000.0 * recursive_work_time / steps,
             "perf_stats_time_ms": 1000.0 * stats_time / steps,
             "perf_steps_per_sec": float(steps / max(total_step_time, 1e-9)),
             "perf_shield_time_ratio": float(shield_time / max(total_step_time, 1e-9)),
@@ -198,6 +241,19 @@ class CentralizedSafetyShield:
     def _maybe_record(self, key: str, start: float | None) -> None:
         if start is not None:
             self.profile[key] += perf_counter() - start
+
+    def _start_recursive_work_timer(self) -> float | None:
+        if not self.profile_enabled:
+            return None
+        self._recursive_profile_depth += 1
+        return perf_counter()
+
+    def _stop_recursive_work_timer(self, start: float | None) -> None:
+        if start is None:
+            return
+        elapsed = perf_counter() - start
+        self.profile["recursive_work_time"] += elapsed
+        self._recursive_profile_depth = max(0, self._recursive_profile_depth - 1)
 
     def _capture_state(self, env: UAVSearchEnv) -> Dict[str, Any]:
         return {
@@ -1153,6 +1209,7 @@ class CentralizedSafetyShield:
         return one_hot
 
     def _zero_agent_risk(self) -> Dict[str, float]:
+        base_threshold = float(getattr(self.cfg.shield, "risk_threshold", 0.0))
         return {
             "score": 0.0,
             "clear": 0.0,
@@ -1161,8 +1218,42 @@ class CentralizedSafetyShield:
             "region": 0.0,
             "hist": 0.0,
             "support": 0.0,
+            "base_threshold": base_threshold,
+            "runtime_threshold": base_threshold,
+            "risk_band": "inactive",
+            "dual_schedule_active": False,
             "high_risk": False,
         }
+
+    def _runtime_risk_band_and_threshold(self, score: float) -> tuple[str, float, bool]:
+        base_threshold = float(self.cfg.shield.risk_threshold)
+        dual_active = bool(
+            self.dual_schedule_enabled
+            and self.cfg.shield.mode == "recursive"
+            and self.recursive_gate_mode == "risk"
+            and self.risk_score_enabled
+        )
+        if not dual_active:
+            return "inactive", base_threshold, False
+
+        if score < float(self.cfg.shield.dual_schedule_low_risk_max):
+            band = "low"
+            runtime_threshold = base_threshold + float(self.cfg.shield.dual_schedule_low_risk_margin)
+        elif score >= float(self.cfg.shield.dual_schedule_high_risk_min):
+            band = "high"
+            runtime_threshold = base_threshold - float(self.cfg.shield.dual_schedule_high_risk_margin)
+        else:
+            band = "medium"
+            runtime_threshold = base_threshold
+
+        runtime_threshold = float(
+            np.clip(
+                runtime_threshold,
+                float(self.cfg.shield.dual_schedule_threshold_min),
+                float(self.cfg.shield.dual_schedule_threshold_max),
+            )
+        )
+        return band, runtime_threshold, True
 
     def _clearance_risk_from_value(self, clearance: float | None, *, norm: float | None = None) -> float:
         if clearance is None:
@@ -1320,6 +1411,8 @@ class CentralizedSafetyShield:
         # TODO: extend with feasibility-proxy and uncertainty / preference-conflict
         # terms while keeping the risk path cheap and fully reusable from shield
         # local geometry / cache statistics.
+        base_threshold = float(self.cfg.shield.risk_threshold)
+        risk_band, runtime_threshold, dual_schedule_active = self._runtime_risk_band_and_threshold(float(score))
         return {
             "score": float(score),
             "clear": float(clear_risk),
@@ -1328,8 +1421,80 @@ class CentralizedSafetyShield:
             "region": float(region_risk),
             "hist": float(hist_risk),
             "support": float(support_risk),
-            "high_risk": bool(score >= float(self.cfg.shield.risk_threshold)),
+            "base_threshold": base_threshold,
+            "runtime_threshold": float(runtime_threshold),
+            "risk_band": str(risk_band),
+            "dual_schedule_active": bool(dual_schedule_active),
+            "high_risk": bool(score >= float(runtime_threshold)),
         }
+
+    def _future_fixed_actions(
+        self,
+        future_order: Sequence[int],
+        beam_actions: Sequence[int],
+        depth: int,
+    ) -> Dict[int, int]:
+        return {
+            int(future_order[idx]): int(beam_actions[int(future_order[idx])])
+            for idx in range(min(int(depth), len(future_order)))
+        }
+
+    def _should_use_future_exact_rescue(
+        self,
+        state: Dict[str, Any],
+        agent_idx: int,
+        sequential_actions: Sequence[int],
+        hard_meta: Dict[str, Any],
+    ) -> bool:
+        solver_mode = self.future_hard_solver_mode
+        if solver_mode == "exact":
+            return True
+        if solver_mode != "sequential_with_exact_rescue":
+            return False
+        if not sequential_actions:
+            return True
+        if len(sequential_actions) <= self.future_exact_rescue_max_sequential_size:
+            return True
+        if self.future_exact_rescue_risk_trigger and self._current_step_near_risk_zone(state, agent_idx, hard_meta):
+            return True
+        return False
+
+    def _enumerate_future_hard_actions_with_meta(
+        self,
+        env: UAVSearchEnv,
+        state: Dict[str, Any],
+        agent_idx: int,
+        base_actions: Sequence[int],
+        *,
+        planned_next_positions: Optional[np.ndarray] = None,
+        fixed_actions: Dict[int, int] | None = None,
+    ) -> tuple[List[int], Dict[str, Any]]:
+        sequential_actions, sequential_meta = self._enumerate_sequential_hard_actions_with_meta(
+            env,
+            state,
+            agent_idx,
+            base_actions,
+            planned_next_positions=planned_next_positions,
+            allow_refine=self.future_refine_enabled,
+        )
+        if not self._should_use_future_exact_rescue(state, agent_idx, sequential_actions, sequential_meta):
+            return sequential_actions, sequential_meta
+
+        self._step_future_exact_query_count += 1
+        exact_actions = self.enumerate_exact_hard_actions(
+            env,
+            state,
+            agent_idx,
+            base_actions,
+            fixed_actions=fixed_actions,
+        )
+        if not sequential_actions and exact_actions:
+            self._step_future_exact_false_empty_count += 1
+        if sequential_actions and not exact_actions:
+            self._step_future_exact_pruned_nonempty_count += 1
+        self._step_future_exact_rescue_count += 1
+        exact_meta = self._exact_meta_from_template(exact_actions, sequential_meta)
+        return exact_actions, exact_meta
 
     def _future_witness_candidates(
         self,
@@ -1371,7 +1536,12 @@ class CentralizedSafetyShield:
             add(int(action))
             if len(ordered) >= max(self.future_witness_top_k + 1, self.future_beam_width):
                 break
-        return ordered
+        if self.future_branch_score_mode == "viability":
+            ordered.sort(
+                key=lambda action: self._future_branch_score(int(action), hard_actions, hard_meta),
+                reverse=True,
+            )
+        return ordered[: max(self.future_witness_top_k + 1, self.future_beam_width)]
 
     def _future_branch_score(
         self,
@@ -1384,7 +1554,21 @@ class CentralizedSafetyShield:
         if action_clearance is None or not np.isfinite(float(action_clearance)):
             action_clearance = 0.0
         support_bonus = float(len(hard_actions))
-        return float(action_clearance) + 0.05 * support_bonus
+        if self.future_branch_score_mode != "viability":
+            return float(action_clearance) + 0.05 * support_bonus
+
+        valid_action_count = max(1, int(hard_meta.get("valid_action_count", len(hard_actions))))
+        support_ratio = float(len(hard_actions) / valid_action_count)
+        slack_bonus = float(1.0 - self.compute_fragility_risk(hard_actions, hard_meta))
+        clearance_bonus = float(1.0 - self._clearance_risk_from_value(action_clearance))
+        region_penalty = float(self.compute_region_risk(hard_meta))
+        return (
+            0.55 * clearance_bonus
+            + 0.20 * support_ratio
+            + 0.20 * slack_bonus
+            - 0.15 * region_penalty
+            + 0.02 * support_bonus
+        )
 
     def _attempt_hard_repair(
         self,
@@ -1448,8 +1632,8 @@ class CentralizedSafetyShield:
                     continue
                 final_actions[prior_agent_idx] = int(alternative)
                 planned_next_positions[prior_agent_idx] = candidate_positions[prior_agent_idx]
-                effective_masks[prior_agent_idx] = self._allowed_mask_from_actions(
-                    stored_candidates,
+                effective_masks[prior_agent_idx] = self._allowed_mask_from_actions( 
+                    stored_candidates, 
                     valid_masks[prior_agent_idx],
                 )
                 agent_triggered_flags[prior_agent_idx] = True
@@ -1459,75 +1643,97 @@ class CentralizedSafetyShield:
                 return repaired_hard_actions, repaired_hard_meta, True
         return [], {}, False
 
-    def _future_safe_exists(self, env: UAVSearchEnv, state: Dict[str, Any]) -> bool:
-        start = self._maybe_start()
+    def _future_safe_exists(
+        self,
+        env: UAVSearchEnv,
+        state: Dict[str, Any],
+        *,
+        horizon: int | None = None,
+    ) -> bool:
+        start = self._start_recursive_work_timer()
+        remaining_horizon = self.lookahead_horizon if horizon is None else max(1, int(horizon))
         state_key = self._state_key(state)
-        if self.cache_enabled:
-            self.profile["future_cache_queries"] += 1.0
-            cached = self.future_safe_cache.get(state_key)
-            if cached is not None:
-                self.profile["future_cache_hits"] += 1.0
-                self._maybe_record("recursive_time", start)
-                return bool(cached)
+        cache_key = (state_key, int(remaining_horizon))
+        try:
+            if self.cache_enabled:
+                self.profile["future_cache_queries"] += 1.0
+                cached = self.future_safe_cache.get(cache_key)
+                if cached is not None:
+                    self.profile["future_cache_hits"] += 1.0
+                    return bool(cached)
 
-        initial_actions = self._default_actions_for_state(state)
-        initial_positions = self._planned_next_positions(state, initial_actions)
-        future_order = self._compute_adjudication_order(
-            state,
-            initial_actions,
-            planned_next_positions=initial_positions,
-        )
-        beam: List[tuple[List[int], float, int]] = [(list(initial_actions), 0.0, 0)]
-        max_beam_width_used = 0
-        future_safe = True
-        for _ in range(self.cfg.env.n_uavs):
-            if not beam:
-                future_safe = False
-                break
-            max_beam_width_used = max(max_beam_width_used, len(beam))
-            expanded: List[tuple[List[int], float, int]] = []
-            for beam_actions, beam_score, depth in beam:
-                if depth >= len(future_order):
-                    expanded.append((list(beam_actions), float(beam_score), depth))
-                    continue
-                beam_positions = self._planned_next_positions(state, beam_actions)
-                agent_idx = int(future_order[depth])
-                hard_actions, hard_meta = self._enumerate_sequential_hard_actions_with_meta(
-                    env,
-                    state,
-                    agent_idx,
-                    beam_actions,
-                    planned_next_positions=beam_positions,
-                    allow_refine=False,
-                )
-                if not hard_actions:
-                    continue
-                witness_candidates = self._future_witness_candidates(
-                    beam_actions[agent_idx],
-                    hard_actions,
-                    hard_meta,
-                )
-                self._step_future_witness_branches += len(witness_candidates)
-                for action in witness_candidates:
-                    next_actions = list(beam_actions)
-                    next_actions[agent_idx] = int(action)
-                    next_score = float(beam_score) + self._future_branch_score(action, hard_actions, hard_meta)
-                    expanded.append((next_actions, next_score, depth + 1))
-            if not expanded:
-                future_safe = False
-                break
-            expanded.sort(key=lambda item: float(item[1]), reverse=True)
-            beam = expanded[: self.future_beam_width]
-        if beam:
-            max_beam_width_used = max(max_beam_width_used, len(beam))
+            initial_actions = self._default_actions_for_state(state)
+            initial_positions = self._planned_next_positions(state, initial_actions)
+            future_order = self._compute_adjudication_order(
+                state,
+                initial_actions,
+                planned_next_positions=initial_positions,
+            )
+            beam: List[tuple[List[int], float, int]] = [(list(initial_actions), 0.0, 0)]
+            max_beam_width_used = 0
+            future_safe = True
+            for _ in range(self.cfg.env.n_uavs):
+                if not beam:
+                    future_safe = False
+                    break
+                max_beam_width_used = max(max_beam_width_used, len(beam))
+                expanded: List[tuple[List[int], float, int]] = []
+                for beam_actions, beam_score, depth in beam:
+                    if depth >= len(future_order):
+                        expanded.append((list(beam_actions), float(beam_score), depth))
+                        continue
+                    beam_positions = self._planned_next_positions(state, beam_actions)
+                    agent_idx = int(future_order[depth])
+                    fixed_actions = self._future_fixed_actions(future_order, beam_actions, depth)
+                    hard_actions, hard_meta = self._enumerate_future_hard_actions_with_meta(
+                        env,
+                        state,
+                        agent_idx,
+                        beam_actions,
+                        planned_next_positions=beam_positions,
+                        fixed_actions=fixed_actions,
+                    )
+                    if not hard_actions:
+                        continue
+                    witness_candidates = self._future_witness_candidates(
+                        beam_actions[agent_idx],
+                        hard_actions,
+                        hard_meta,
+                    )
+                    self._step_future_witness_branches += len(witness_candidates)
+                    for action in witness_candidates:
+                        next_actions = list(beam_actions)
+                        next_actions[agent_idx] = int(action)
+                        next_score = float(beam_score) + self._future_branch_score(action, hard_actions, hard_meta)
+                        expanded.append((next_actions, next_score, depth + 1))
+                if not expanded:
+                    future_safe = False
+                    break
+                expanded.sort(key=lambda item: float(item[1]), reverse=True)
+                self._step_future_beam_pruned_branch_count += float(max(0, len(expanded) - self.future_beam_width))
+                beam = expanded[: self.future_beam_width]
+            if beam:
+                max_beam_width_used = max(max_beam_width_used, len(beam))
 
-        self._step_future_beam_calls += 1
-        self._step_future_beam_width_sum += float(max_beam_width_used)
+            if future_safe and remaining_horizon > 1:
+                recursive_future_safe = False
+                for beam_actions, _, depth in beam:
+                    if depth < len(future_order):
+                        continue
+                    next_state = self.predict_next_state(env, beam_actions, state=state)
+                    if self._future_safe_exists(env, next_state, horizon=remaining_horizon - 1):
+                        recursive_future_safe = True
+                        break
+                future_safe = bool(recursive_future_safe)
 
-        if self.cache_enabled:
-            self.future_safe_cache[state_key] = bool(future_safe)
-        self._maybe_record("recursive_time", start)
-        return bool(future_safe)
+            self._step_future_beam_calls += 1
+            self._step_future_beam_width_sum += float(max_beam_width_used)
+
+            if self.cache_enabled:
+                self.future_safe_cache[cache_key] = bool(future_safe)
+            return bool(future_safe)
+        finally:
+            self._stop_recursive_work_timer(start)
 
     def enumerate_recursive_feasible_actions(
         self,
@@ -1542,14 +1748,16 @@ class CentralizedSafetyShield:
 
         start = self._maybe_start()
         recursive_actions: List[int] = []
-        for action in hard_actions:
-            candidate_actions = list(base_actions)
-            candidate_actions[agent_idx] = int(action)
-            next_state = self.predict_next_state(env, candidate_actions, state=state)
-            if self._future_safe_exists(env, next_state):
-                recursive_actions.append(int(action))
-        self._maybe_record("recursive_time", start)
-        return recursive_actions
+        try:
+            for action in hard_actions:
+                candidate_actions = list(base_actions)
+                candidate_actions[agent_idx] = int(action)
+                next_state = self.predict_next_state(env, candidate_actions, state=state)
+                if self._future_safe_exists(env, next_state, horizon=self.lookahead_horizon):
+                    recursive_actions.append(int(action))
+            return recursive_actions
+        finally:
+            self._maybe_record("recursive_time", start)
 
     def _current_step_near_risk_zone(self, state: Dict[str, Any], agent_idx: int, hard_meta: Dict[str, Any]) -> bool:
         if hard_meta.get("near_boundary", False):
@@ -1730,6 +1938,9 @@ class CentralizedSafetyShield:
         decision_meta = {
             "recursive_gate_run": False,
             "high_risk": bool(risk_info.get("high_risk", False)),
+            "risk_band": str(risk_info.get("risk_band", "inactive")),
+            "base_risk_threshold": float(risk_info.get("base_threshold", self.cfg.shield.risk_threshold)),
+            "runtime_risk_threshold": float(risk_info.get("runtime_threshold", self.cfg.shield.risk_threshold)),
             "used_legacy_recursive_gate": bool(self._uses_legacy_recursive_gate()),
             "recursive_gate_mode": str(self.recursive_gate_mode),
         }
@@ -1762,36 +1973,40 @@ class CentralizedSafetyShield:
 
         decision_meta["recursive_gate_run"] = True
         self.profile["recursive_gate_runs"] += 1.0
-        prioritized = self._prioritized_recursive_candidates(
-            actor_output,
-            hard_actions,
-            proposed_action,
-            hard_meta.get("clearances", {}),
-        )
-        rec_actions: List[int] = []
-        checked = set()
+        start = self._maybe_start()
+        try:
+            prioritized = self._prioritized_recursive_candidates(
+                actor_output,
+                hard_actions,
+                proposed_action,
+                hard_meta.get("clearances", {}),
+            )
+            rec_actions: List[int] = []
+            checked = set()
 
-        def evaluate_candidates(candidates: Sequence[int]) -> None:
-            for action in candidates:
-                act = int(action)
-                if act in checked:
-                    continue
-                checked.add(act)
-                self.profile["recursive_candidate_checks"] += 1.0
-                candidate_actions = list(base_actions)
-                candidate_actions[agent_idx] = act
-                next_state = self.predict_next_state(env, candidate_actions, state=state)
-                if self._future_safe_exists(env, next_state):
-                    rec_actions.append(act)
+            def evaluate_candidates(candidates: Sequence[int]) -> None:
+                for action in candidates:
+                    act = int(action)
+                    if act in checked:
+                        continue
+                    checked.add(act)
+                    self.profile["recursive_candidate_checks"] += 1.0
+                    candidate_actions = list(base_actions)
+                    candidate_actions[agent_idx] = act
+                    next_state = self.predict_next_state(env, candidate_actions, state=state)
+                    if self._future_safe_exists(env, next_state):
+                        rec_actions.append(act)
 
-        evaluate_candidates(prioritized)
-        if rec_actions:
+            evaluate_candidates(prioritized)
+            if rec_actions:
+                return rec_actions, decision_meta
+
+            if self.cfg.shield.candidate_full_fallback:
+                remaining = [int(a) for a in hard_actions if int(a) not in checked]
+                evaluate_candidates(remaining)
             return rec_actions, decision_meta
-
-        if self.cfg.shield.candidate_full_fallback:
-            remaining = [int(a) for a in hard_actions if int(a) not in checked]
-            evaluate_candidates(remaining)
-        return rec_actions, decision_meta
+        finally:
+            self._maybe_record("recursive_time", start)
 
     def mask_actor_output_with_allowed_set(
         self,
@@ -1922,6 +2137,17 @@ class CentralizedSafetyShield:
                 "risk_region": 0.0,
                 "risk_hist": 0.0,
                 "risk_support": 0.0,
+                "base_risk_threshold": 0.0,
+                "runtime_risk_threshold": 0.0,
+                "dual_schedule_active_agents": 0,
+                "dual_schedule_active_rate_step": 0.0,
+                "dual_risk_band_low_agents": 0,
+                "dual_risk_band_medium_agents": 0,
+                "dual_risk_band_high_agents": 0,
+                "dual_risk_band_low_rate_step": 0.0,
+                "dual_risk_band_medium_rate_step": 0.0,
+                "dual_risk_band_high_rate_step": 0.0,
+                "dual_risk_band_dominant_step": "inactive",
                 "high_risk_agents": 0,
                 "high_risk_rate_step": 0.0,
                 "recursive_gate_agents": 0,
@@ -1931,6 +2157,11 @@ class CentralizedSafetyShield:
                 "hard_repair_success_count_step": 0,
                 "future_witness_branch_count_step": 0.0,
                 "future_beam_width_used_step": 0.0,
+                "future_exact_query_count_step": 0,
+                "future_exact_rescue_count_step": 0,
+                "future_exact_false_empty_count_step": 0,
+                "future_exact_pruned_nonempty_count_step": 0,
+                "future_beam_pruned_branch_count_step": 0.0,
                 "exact_hard_query_count_step": 0,
                 "exact_hard_feasible_count_step": 0,
                 "exact_hard_rescue_count_step": 0,
@@ -1955,6 +2186,8 @@ class CentralizedSafetyShield:
         risk_region_scores = [0.0 for _ in range(n_agents)]
         risk_hist_scores = [0.0 for _ in range(n_agents)]
         risk_support_scores = [0.0 for _ in range(n_agents)]
+        base_risk_thresholds = [float(self.cfg.shield.risk_threshold) for _ in range(n_agents)]
+        runtime_risk_thresholds = [float(self.cfg.shield.risk_threshold) for _ in range(n_agents)]
         agent_candidate_actions: List[List[int]] = [[] for _ in range(n_agents)]
         agent_hard_meta: List[Optional[Dict[str, Any]]] = [None for _ in range(n_agents)]
         agent_triggered_flags = [False for _ in range(n_agents)]
@@ -1964,6 +2197,10 @@ class CentralizedSafetyShield:
         processed_order: List[int] = []
         high_risk_agents = 0
         recursive_gate_agents = 0
+        dual_schedule_active_agents = 0
+        dual_risk_band_low_agents = 0
+        dual_risk_band_medium_agents = 0
+        dual_risk_band_high_agents = 0
 
         # Shield hierarchy: A_hard -> risk gate -> A_rec.
         # "safe" mode is intentionally kept as the experiment name for the
@@ -2034,6 +2271,17 @@ class CentralizedSafetyShield:
             risk_region_scores[agent_idx] = float(risk_info["region"])
             risk_hist_scores[agent_idx] = float(risk_info["hist"])
             risk_support_scores[agent_idx] = float(risk_info.get("support", 0.0))
+            base_risk_thresholds[agent_idx] = float(risk_info.get("base_threshold", self.cfg.shield.risk_threshold))
+            runtime_risk_thresholds[agent_idx] = float(risk_info.get("runtime_threshold", self.cfg.shield.risk_threshold))
+            if bool(risk_info.get("dual_schedule_active", False)):
+                dual_schedule_active_agents += 1
+                risk_band = str(risk_info.get("risk_band", "medium"))
+                if risk_band == "low":
+                    dual_risk_band_low_agents += 1
+                elif risk_band == "high":
+                    dual_risk_band_high_agents += 1
+                else:
+                    dual_risk_band_medium_agents += 1
             high_risk_agents += int(bool(risk_info.get("high_risk", False)))
 
             rec_actions: List[int] = []
@@ -2120,6 +2368,18 @@ class CentralizedSafetyShield:
         fallback_triggered = bool(emergency_triggered)
         recursive_gate_ran = bool(recursive_gate_agents > 0)
         dead_end_hard_triggered = bool(any(size == 0 for size in hard_sizes))
+        if dual_schedule_active_agents > 0:
+            band_counts = {
+                "low": int(dual_risk_band_low_agents),
+                "medium": int(dual_risk_band_medium_agents),
+                "high": int(dual_risk_band_high_agents),
+            }
+            dual_risk_band_dominant = max(
+                band_counts.items(),
+                key=lambda item: (int(item[1]), {"low": 0, "medium": 1, "high": 2}[item[0]]),
+            )[0]
+        else:
+            dual_risk_band_dominant = "inactive"
 
         if shield_triggered:
             self.shield_trigger_count += 1
@@ -2188,6 +2448,17 @@ class CentralizedSafetyShield:
             "risk_region": float(np.mean(risk_region_scores)) if risk_region_scores else 0.0,
             "risk_hist": float(np.mean(risk_hist_scores)) if risk_hist_scores else 0.0,
             "risk_support": float(np.mean(risk_support_scores)) if risk_support_scores else 0.0,
+            "base_risk_threshold": float(np.mean(base_risk_thresholds)) if base_risk_thresholds else 0.0,
+            "runtime_risk_threshold": float(np.mean(runtime_risk_thresholds)) if runtime_risk_thresholds else 0.0,
+            "dual_schedule_active_agents": int(dual_schedule_active_agents),
+            "dual_schedule_active_rate_step": float(dual_schedule_active_agents / max(1, n_agents)),
+            "dual_risk_band_low_agents": int(dual_risk_band_low_agents),
+            "dual_risk_band_medium_agents": int(dual_risk_band_medium_agents),
+            "dual_risk_band_high_agents": int(dual_risk_band_high_agents),
+            "dual_risk_band_low_rate_step": float(dual_risk_band_low_agents / max(1, n_agents)),
+            "dual_risk_band_medium_rate_step": float(dual_risk_band_medium_agents / max(1, n_agents)),
+            "dual_risk_band_high_rate_step": float(dual_risk_band_high_agents / max(1, n_agents)),
+            "dual_risk_band_dominant_step": str(dual_risk_band_dominant),
             "high_risk_agents": int(high_risk_agents),
             "high_risk_rate_step": float(high_risk_agents / max(1, n_agents)),
             "recursive_gate_agents": int(recursive_gate_agents),
@@ -2196,6 +2467,11 @@ class CentralizedSafetyShield:
             "hard_repair_attempt_count_step": int(self._step_hard_repair_attempts),
             "hard_repair_success_count_step": int(self._step_hard_repair_successes),
             "future_witness_branch_count_step": float(self._step_future_witness_branches),
+            "future_exact_query_count_step": int(self._step_future_exact_query_count),
+            "future_exact_rescue_count_step": int(self._step_future_exact_rescue_count),
+            "future_exact_false_empty_count_step": int(self._step_future_exact_false_empty_count),
+            "future_exact_pruned_nonempty_count_step": int(self._step_future_exact_pruned_nonempty_count),
+            "future_beam_pruned_branch_count_step": float(self._step_future_beam_pruned_branch_count),
             "exact_hard_query_count_step": int(self._step_exact_hard_queries),
             "exact_hard_feasible_count_step": int(self._step_exact_hard_feasible),
             "exact_hard_rescue_count_step": int(self._step_exact_hard_rescues),

@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Stage-level mechanism statistics for progressive conservativeness curricula. Early stages mainly stay at the hard-safe / safe layer. The threshold-only curriculum switches to the recursive feasible layer in mid and late stages, while the safeearly variant switches to an H=2 stronger layer in the late stage. The H=2 late-stage mechanism statistics should not be interpreted as evidence that the final learned policy is uniformly better.}
+\label{tab:progressive-stage-mechanism}
+\small
+\begin{tabular}{llcrrrrrr}
+\toprule
+Setting & Stage & Mode & H & $\eta$ & Gate & Rec. dead-end & Shield ms & Rec. ms \\
+\midrule
+\texttt{non\_progressive} & fixed & recursive & 1 & 0.35 & 0.2449 & 0.4549 & 175.87 & 147.49 \\
+\texttt{threshold\_only} & early & safe & 1 & 0.90 & 0.0000 & 0.0000 & 31.41 & 0.00 \\
+\texttt{threshold\_only} & mid & recursive & 1 & 0.35 & 0.2477 & 0.4495 & 177.11 & 149.05 \\
+\texttt{threshold\_only} & late & recursive & 1 & 0.35 & 0.2473 & 0.4494 & 179.65 & 148.72 \\
+\texttt{safeearly} & early & safe & 1 & 0.90 & 0.0000 & 0.0000 & 30.91 & 0.00 \\
+\texttt{safeearly} & mid & recursive & 1 & 0.35 & 0.2457 & 0.4397 & 178.46 & 150.32 \\
+\texttt{safeearly} & late & recursive & 2 & 0.55 & 0.0507 & 0.1441 & 97.22 & 67.18 \\
+\bottomrule
+\end{tabular}
+\end{table}

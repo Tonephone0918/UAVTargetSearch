@@ -20,6 +20,16 @@ SUMMARY_CSV_FIELDS = [
     "risk_variant",
     "exact_diagnostics_enabled",
     "progressive_enabled",
+    "progressive_stage",
+    "progressive_stage_id",
+    "progressive_progress",
+    "effective_shield_mode",
+    "effective_lookahead_horizon",
+    "effective_base_risk_threshold",
+    "effective_risk_threshold",
+    "effective_runtime_risk_threshold",
+    "dual_schedule_enabled",
+    "dual_risk_band_dominant",
     "episodes",
     "episode_steps",
     "total_steps",
@@ -96,6 +106,14 @@ SUMMARY_CSV_FIELDS = [
     "avg_risk_region",
     "avg_risk_hist",
     "avg_risk_support",
+    "dual_schedule_active_agent_count",
+    "dual_schedule_active_rate",
+    "dual_risk_band_low_count",
+    "dual_risk_band_medium_count",
+    "dual_risk_band_high_count",
+    "dual_risk_band_low_rate",
+    "dual_risk_band_medium_rate",
+    "dual_risk_band_high_rate",
     "high_risk_agent_count",
     "high_risk_rate",
     "recursive_gate_agent_count",
@@ -103,6 +121,11 @@ SUMMARY_CSV_FIELDS = [
     "future_witness_branch_count",
     "avg_future_witness_branch_count",
     "future_beam_width_used",
+    "future_exact_query_count",
+    "future_exact_rescue_count",
+    "future_exact_false_empty_count",
+    "future_exact_pruned_nonempty_count",
+    "future_beam_pruned_branch_count",
     "perf_step_time_ms",
     "perf_shield_time_ms",
     "perf_hard_time_ms",
@@ -112,6 +135,7 @@ SUMMARY_CSV_FIELDS = [
     "perf_refine_time_ms",
     "perf_predict_time_ms",
     "perf_recursive_time_ms",
+    "perf_recursive_work_time_ms",
     "perf_stats_time_ms",
     "perf_steps_per_sec",
     "perf_shield_time_ratio",
@@ -193,10 +217,20 @@ class EpisodeStatsAccumulator:
         self.risk_region_scores: list[float] = []
         self.risk_hist_scores: list[float] = []
         self.risk_support_scores: list[float] = []
+        self.runtime_risk_thresholds: list[float] = []
+        self.dual_schedule_active_agent_count = 0
+        self.dual_risk_band_low_count = 0
+        self.dual_risk_band_medium_count = 0
+        self.dual_risk_band_high_count = 0
         self.high_risk_agent_count = 0
         self.recursive_gate_agent_count = 0
         self.future_witness_branch_count = 0.0
         self.future_beam_width_used_values: list[float] = []
+        self.future_exact_query_count = 0
+        self.future_exact_rescue_count = 0
+        self.future_exact_false_empty_count = 0
+        self.future_exact_pruned_nonempty_count = 0
+        self.future_beam_pruned_branch_count = 0.0
 
     def update(self, info: Dict[str, float]) -> None:
         self.total_steps += 1
@@ -255,16 +289,37 @@ class EpisodeStatsAccumulator:
         self.risk_region_scores.append(float(info.get("risk_region", 0.0)))
         self.risk_hist_scores.append(float(info.get("risk_hist", 0.0)))
         self.risk_support_scores.append(float(info.get("risk_support", 0.0)))
+        self.runtime_risk_thresholds.append(float(info.get("runtime_risk_threshold", info.get("base_risk_threshold", 0.0))))
+        self.dual_schedule_active_agent_count += int(info.get("dual_schedule_active_agents", 0))
+        self.dual_risk_band_low_count += int(info.get("dual_risk_band_low_agents", 0))
+        self.dual_risk_band_medium_count += int(info.get("dual_risk_band_medium_agents", 0))
+        self.dual_risk_band_high_count += int(info.get("dual_risk_band_high_agents", 0))
         self.high_risk_agent_count += int(info.get("high_risk_agents", 0))
         self.recursive_gate_agent_count += int(info.get("recursive_gate_agents", 0))
         self.future_witness_branch_count += float(info.get("future_witness_branch_count_step", 0.0))
         self.future_beam_width_used_values.append(float(info.get("future_beam_width_used_step", 0.0)))
+        self.future_exact_query_count += int(info.get("future_exact_query_count_step", 0))
+        self.future_exact_rescue_count += int(info.get("future_exact_rescue_count_step", 0))
+        self.future_exact_false_empty_count += int(info.get("future_exact_false_empty_count_step", 0))
+        self.future_exact_pruned_nonempty_count += int(info.get("future_exact_pruned_nonempty_count_step", 0))
+        self.future_beam_pruned_branch_count += float(info.get("future_beam_pruned_branch_count_step", 0.0))
         self.total_agent_steps += int(info.get("risk_agent_count", 0))
 
     def finalize(self, last_info: Dict[str, float], *, found_targets: int, shield_mode: str) -> Dict[str, float]:
         steps = max(1, self.total_steps)
         agent_steps = max(1, self.total_agent_steps)
         coverage_ratio = float(last_info.get("coverage_ratio", last_info.get("coverage_rate", 0.0)))
+        if self.dual_schedule_active_agent_count > 0:
+            dual_risk_band_dominant = max(
+                {
+                    "low": int(self.dual_risk_band_low_count),
+                    "medium": int(self.dual_risk_band_medium_count),
+                    "high": int(self.dual_risk_band_high_count),
+                }.items(),
+                key=lambda item: (int(item[1]), {"low": 0, "medium": 1, "high": 2}[item[0]]),
+            )[0]
+        else:
+            dual_risk_band_dominant = "inactive"
         metrics = {
             "episode_steps": float(self.total_steps),
             "total_steps": float(self.total_steps),
@@ -351,6 +406,16 @@ class EpisodeStatsAccumulator:
             "avg_risk_region": _safe_mean(self.risk_region_scores),
             "avg_risk_hist": _safe_mean(self.risk_hist_scores),
             "avg_risk_support": _safe_mean(self.risk_support_scores),
+            "effective_runtime_risk_threshold": _safe_mean(self.runtime_risk_thresholds),
+            "dual_risk_band_dominant": str(dual_risk_band_dominant),
+            "dual_schedule_active_agent_count": float(self.dual_schedule_active_agent_count),
+            "dual_schedule_active_rate": float(self.dual_schedule_active_agent_count / agent_steps),
+            "dual_risk_band_low_count": float(self.dual_risk_band_low_count),
+            "dual_risk_band_medium_count": float(self.dual_risk_band_medium_count),
+            "dual_risk_band_high_count": float(self.dual_risk_band_high_count),
+            "dual_risk_band_low_rate": float(self.dual_risk_band_low_count / agent_steps),
+            "dual_risk_band_medium_rate": float(self.dual_risk_band_medium_count / agent_steps),
+            "dual_risk_band_high_rate": float(self.dual_risk_band_high_count / agent_steps),
             "high_risk_agent_count": float(self.high_risk_agent_count),
             "high_risk_rate": float(self.high_risk_agent_count / agent_steps),
             "recursive_gate_agent_count": float(self.recursive_gate_agent_count),
@@ -358,6 +423,11 @@ class EpisodeStatsAccumulator:
             "future_witness_branch_count": float(self.future_witness_branch_count),
             "avg_future_witness_branch_count": float(self.future_witness_branch_count / steps),
             "future_beam_width_used": _safe_mean(self.future_beam_width_used_values),
+            "future_exact_query_count": float(self.future_exact_query_count),
+            "future_exact_rescue_count": float(self.future_exact_rescue_count),
+            "future_exact_false_empty_count": float(self.future_exact_false_empty_count),
+            "future_exact_pruned_nonempty_count": float(self.future_exact_pruned_nonempty_count),
+            "future_beam_pruned_branch_count": float(self.future_beam_pruned_branch_count),
             "mode_is_recursive": float(shield_mode == "recursive"),
         }
         return metrics
@@ -442,6 +512,27 @@ def log_summary_scalars(writer, split: str, metrics: Dict[str, float], step: int
         "future_witness_branch_count",
         "avg_future_witness_branch_count",
         "future_beam_width_used",
+        "future_exact_query_count",
+        "future_exact_rescue_count",
+        "future_exact_false_empty_count",
+        "future_exact_pruned_nonempty_count",
+        "future_beam_pruned_branch_count",
+        "progressive_enabled",
+        "progressive_stage_id",
+        "progressive_progress",
+        "effective_lookahead_horizon",
+        "effective_base_risk_threshold",
+        "effective_risk_threshold",
+        "effective_runtime_risk_threshold",
+        "dual_schedule_enabled",
+        "dual_schedule_active_agent_count",
+        "dual_schedule_active_rate",
+        "dual_risk_band_low_count",
+        "dual_risk_band_medium_count",
+        "dual_risk_band_high_count",
+        "dual_risk_band_low_rate",
+        "dual_risk_band_medium_rate",
+        "dual_risk_band_high_rate",
         "total_steps",
         "episode_steps",
         "perf_step_time_ms",
@@ -453,6 +544,7 @@ def log_summary_scalars(writer, split: str, metrics: Dict[str, float], step: int
         "perf_refine_time_ms",
         "perf_predict_time_ms",
         "perf_recursive_time_ms",
+        "perf_recursive_work_time_ms",
         "perf_stats_time_ms",
         "perf_steps_per_sec",
         "perf_shield_time_ratio",
@@ -486,6 +578,12 @@ def log_summary_scalars(writer, split: str, metrics: Dict[str, float], step: int
         writer.add_scalar("shield/risk_clear_gap", float(metrics.get("avg_risk_clear_gap", 0.0)), step)
         writer.add_scalar("shield/risk_fragility", float(metrics.get("avg_risk_fragility", 0.0)), step)
         writer.add_scalar("shield/risk_support", float(metrics.get("avg_risk_support", 0.0)), step)
+        writer.add_scalar("shield/base_risk_threshold", float(metrics.get("effective_base_risk_threshold", 0.0)), step)
+        writer.add_scalar("shield/runtime_risk_threshold", float(metrics.get("effective_runtime_risk_threshold", 0.0)), step)
+        writer.add_scalar("shield/dual_schedule_active_rate", float(metrics.get("dual_schedule_active_rate", 0.0)), step)
+        writer.add_scalar("shield/dual_risk_band_low_rate", float(metrics.get("dual_risk_band_low_rate", 0.0)), step)
+        writer.add_scalar("shield/dual_risk_band_medium_rate", float(metrics.get("dual_risk_band_medium_rate", 0.0)), step)
+        writer.add_scalar("shield/dual_risk_band_high_rate", float(metrics.get("dual_risk_band_high_rate", 0.0)), step)
         writer.add_scalar("shield/high_risk_rate", float(metrics["high_risk_rate"]), step)
         writer.add_scalar("shield/recursive_gate_rate", float(metrics["recursive_gate_rate"]), step)
         writer.add_scalar("shield/min_uav_uav_margin", float(metrics["episode_min_uav_margin"]), step)

@@ -8,6 +8,8 @@ DeadEndPolicy = Literal["fail_closed", "emergency"]
 AdjudicationOrder = Literal["fixed", "most_constrained_first"]
 FutureWitnessMode = Literal["single", "base_plus_clearance"]
 HardSolverMode = Literal["sequential", "exact", "sequential_with_exact_rescue"]
+ProgressiveEarlyMode = Literal["safe", "recursive"]
+FutureBranchScoreMode = Literal["clearance_support", "viability"]
 
 
 def canonicalize_risk_variant(name: str) -> str:
@@ -166,11 +168,31 @@ class ShieldConfig:
     future_witness_mode: FutureWitnessMode = "base_plus_clearance"
     future_beam_width: int = 2
     future_witness_top_k: int = 2
+    future_hard_solver_mode: HardSolverMode = "sequential"
+    future_refine_enabled: bool = False
+    future_exact_rescue_max_sequential_size: int = 0
+    future_exact_rescue_risk_trigger: bool = False
+    future_branch_score_mode: FutureBranchScoreMode = "clearance_support"
 
     # Reserved interface for later stages.
     progressive_enabled: bool = False
+    progressive_early_mode: ProgressiveEarlyMode = "safe"
+    progressive_early_end_ratio: float = 0.33
+    progressive_late_start_ratio: float = 0.67
+    progressive_early_risk_threshold: float = 0.90
+    progressive_mid_risk_threshold: float = 0.35
+    progressive_late_risk_threshold: float = 0.35
+    progressive_mid_lookahead_horizon: int = 1
+    progressive_late_lookahead_horizon: int = 1
     lookahead_horizon: int = 1
     risk_schedule_enabled: bool = False
+    dual_schedule_enabled: bool = False
+    dual_schedule_low_risk_max: float = 0.20
+    dual_schedule_high_risk_min: float = 0.50
+    dual_schedule_low_risk_margin: float = 0.10
+    dual_schedule_high_risk_margin: float = 0.10
+    dual_schedule_threshold_min: float = 0.05
+    dual_schedule_threshold_max: float = 0.95
 
     def __post_init__(self) -> None:
         self.risk_variant = canonicalize_risk_variant(str(self.risk_variant))
@@ -192,6 +214,29 @@ class ShieldConfig:
             self.future_witness_mode = "base_plus_clearance"
         self.future_beam_width = max(1, int(self.future_beam_width))
         self.future_witness_top_k = max(1, int(self.future_witness_top_k))
+        if str(self.future_hard_solver_mode) not in {"sequential", "exact", "sequential_with_exact_rescue"}:
+            self.future_hard_solver_mode = "sequential"
+        self.future_refine_enabled = bool(self.future_refine_enabled)
+        self.future_exact_rescue_max_sequential_size = max(0, int(self.future_exact_rescue_max_sequential_size))
+        self.future_exact_rescue_risk_trigger = bool(self.future_exact_rescue_risk_trigger)
+        if str(self.future_branch_score_mode) not in {"clearance_support", "viability"}:
+            self.future_branch_score_mode = "clearance_support"
+        if str(self.progressive_early_mode) not in {"safe", "recursive"}:
+            self.progressive_early_mode = "safe"
+        self.progressive_early_end_ratio = min(1.0, max(0.0, float(self.progressive_early_end_ratio)))
+        self.progressive_late_start_ratio = min(1.0, max(self.progressive_early_end_ratio, float(self.progressive_late_start_ratio)))
+        self.progressive_mid_lookahead_horizon = max(1, int(self.progressive_mid_lookahead_horizon))
+        self.progressive_late_lookahead_horizon = max(1, int(self.progressive_late_lookahead_horizon))
+        self.lookahead_horizon = max(1, int(self.lookahead_horizon))
+        self.dual_schedule_low_risk_max = min(1.0, max(0.0, float(self.dual_schedule_low_risk_max)))
+        self.dual_schedule_high_risk_min = min(1.0, max(self.dual_schedule_low_risk_max, float(self.dual_schedule_high_risk_min)))
+        self.dual_schedule_low_risk_margin = max(0.0, float(self.dual_schedule_low_risk_margin))
+        self.dual_schedule_high_risk_margin = max(0.0, float(self.dual_schedule_high_risk_margin))
+        self.dual_schedule_threshold_min = min(1.0, max(0.0, float(self.dual_schedule_threshold_min)))
+        self.dual_schedule_threshold_max = min(
+            1.0,
+            max(self.dual_schedule_threshold_min, float(self.dual_schedule_threshold_max)),
+        )
         if self.risk_vnext_weight_prop_clear is not None:
             self.risk_base_weight_prop_clear = float(self.risk_vnext_weight_prop_clear)
         if self.risk_vnext_weight_clear_gap is not None:

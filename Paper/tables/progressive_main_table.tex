@@ -1,0 +1,15 @@
+\begin{table}[t]
+\centering
+\caption{Main comparison of progressive conservativeness curricula under an always-on hard-safe shield. Task, safety, and gate metrics are taken from the formal comparison, while runtime metrics are taken from the re-aggregated mechanism summary. \texttt{threshold\_only\_progressive} gives a mixed but useful improvement in guarantee violation and recursive dead-end rates, but it does not fully dominate \texttt{non\_progressive}.}
+\label{tab:progressive-main}
+\small
+\begin{tabular}{lrrrrrrrr}
+\toprule
+Setting & Search & Coverage & Collision & Guarantee & Rec. dead-end & Gate & Shield ms & Rec. ms \\
+\midrule
+\texttt{non\_progressive} & 0.9973 & 0.9989 & 90.79 & 0.3433 & 0.4640 & 0.2684 & 197.84 & 167.40 \\
+\texttt{threshold\_only} & 0.9987 & 0.9979 & 92.57 & 0.3324 & 0.4437 & 0.2760 & 238.13 & 202.96 \\
+\texttt{safeearly} & 1.0000 & 0.9984 & 94.73 & 0.3543 & 0.4670 & 0.2657 & 192.30 & 162.81 \\
+\bottomrule
+\end{tabular}
+\end{table}
